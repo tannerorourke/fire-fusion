@@ -216,6 +216,7 @@
       "batch_size": 6,
       "accum_steps": 2,
       "max_workers": 20,
+      "compile": true,
       "epochs": [
         5,
         32,
@@ -264,6 +265,7 @@
       "batch_size": 6,
       "accum_steps": 2,
       "max_workers": 20,
+      "compile": true,
       "epochs": [
         5,
         32,
@@ -312,6 +314,7 @@
       "batch_size": 4,
       "accum_steps": 2,
       "max_workers": 20,
+      "compile": true,
       "epochs": [
         5,
         32,
@@ -360,6 +363,7 @@
       "batch_size": 4,
       "accum_steps": 2,
       "max_workers": 20,
+      "compile": true,
       "epochs": [
         5,
         32,
@@ -408,6 +412,7 @@
       "batch_size": 1,
       "accum_steps": 8,
       "max_workers": 20,
+      "compile": true,
       "epochs": [
         5,
         32,
@@ -456,6 +461,7 @@
       "batch_size": 1,
       "accum_steps": 8,
       "max_workers": 20,
+      "compile": true,
       "epochs": [
         5,
         32,
@@ -504,6 +510,7 @@
       "batch_size": 1,
       "accum_steps": 8,
       "max_workers": 20,
+      "compile": true,
       "epochs": [
         5,
         32,

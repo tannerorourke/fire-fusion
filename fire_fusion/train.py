@@ -126,6 +126,13 @@ class WRMTrainer:
               f"neg_keep_rate={self.neg_keep_rate} "
               f"trainable_params={n_train}/{n_total}")
 
+        # -- eager LayerNorm and elementwise kernels dominate the step time at
+        #    these activation sizes; inductor fuses them into bandwidth-bound
+        #    kernels. Placed after freezing: requires_grad flips force recompiles.
+        if training_params.get("compile", False) and device.type == "cuda":
+            self.model = torch.compile(self.model)
+            print("[WRMTrainer] torch.compile enabled")
+
         ep = training_params["epochs"]
         self.ep_warmup, self.ep_max, self.ep_early_stop = ep[0], ep[1], ep[2]
         self.min_lr = training_params["min_lr"]
@@ -344,7 +351,9 @@ class WRMTrainer:
         ep_ign_loss: float = 0.0
         ep_cause_loss: float = 0.0
         n_samples: int = 0
-        with torch.inference_mode():
+        # -- no_grad rather than inference_mode: dynamo-compiled graphs reject
+        #    inference tensors
+        with torch.no_grad():
             for (x_dyn, x_static), golds, masks in tqdm(self.eval_loader, desc="Evaluating...", leave=False):
                 x_dyn = x_dyn.to(self.device)
                 x_static = x_static.to(self.device)

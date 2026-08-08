@@ -67,7 +67,9 @@ def save_model(
             i += 1
         output_path = MODEL_SAVE_DIR / f"{name_base}_{i}.th"
 
-    torch.save(model.state_dict(), output_path)
+    # -- a torch.compile wrapper prefixes keys with '_orig_mod.'; saving the
+    #    plain module keeps checkpoints loadable in uncompiled processes
+    torch.save(getattr(model, "_orig_mod", model).state_dict(), output_path)
 
     return str(output_path)
 
@@ -117,7 +119,7 @@ def load_model(
         p = MODEL_SAVE_DIR / p
 
     state = torch.load(p, map_location=map_location)
-    return model.load_state_dict(state, strict=strict)
+    return getattr(model, "_orig_mod", model).load_state_dict(state, strict=strict)
 
 
 def save_calibration(params: dict, name_base: str = "model") -> str:
