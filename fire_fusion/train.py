@@ -126,11 +126,12 @@ class WRMTrainer:
               f"neg_keep_rate={self.neg_keep_rate} "
               f"trainable_params={n_train}/{n_total}")
 
-        # -- eager LayerNorm and elementwise kernels dominate the step time at
-        #    these activation sizes; inductor fuses them into bandwidth-bound
-        #    kernels. Placed after freezing: requires_grad flips force recompiles.
+        # -- eager LayerNorm/elementwise kernels dominate step time at these
+        #    activation sizes; inductor fuses them. Placed after freezing:
+        #    requires_grad flips force recompiles. dynamic=False skips torch
+        #    2.2's guard solver, which can spin for an hour on static shapes.
         if training_params.get("compile", False) and device.type == "cuda":
-            self.model = torch.compile(self.model)
+            self.model = torch.compile(self.model, dynamic=False)
             print("[WRMTrainer] torch.compile enabled")
 
         ep = training_params["epochs"]
