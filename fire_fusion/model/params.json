@@ -216,7 +216,7 @@
       "batch_size": 6,
       "accum_steps": 2,
       "max_workers": 20,
-      "compile": true,
+      "compile": false,
       "epochs": [
         5,
         32,
@@ -265,7 +265,7 @@
       "batch_size": 6,
       "accum_steps": 2,
       "max_workers": 20,
-      "compile": true,
+      "compile": false,
       "epochs": [
         5,
         32,
@@ -311,10 +311,10 @@
     },
     "training": {
       "seed": 1,
-      "batch_size": 4,
-      "accum_steps": 2,
+      "batch_size": 2,
+      "accum_steps": 4,
       "max_workers": 20,
-      "compile": true,
+      "compile": false,
       "epochs": [
         5,
         32,
@@ -360,10 +360,10 @@
     },
     "training": {
       "seed": 2,
-      "batch_size": 4,
-      "accum_steps": 2,
+      "batch_size": 2,
+      "accum_steps": 4,
       "max_workers": 20,
-      "compile": true,
+      "compile": false,
       "epochs": [
         5,
         32,
@@ -412,7 +412,7 @@
       "batch_size": 1,
       "accum_steps": 8,
       "max_workers": 20,
-      "compile": true,
+      "compile": false,
       "epochs": [
         5,
         32,
@@ -461,7 +461,7 @@
       "batch_size": 1,
       "accum_steps": 8,
       "max_workers": 20,
-      "compile": true,
+      "compile": false,
       "epochs": [
         5,
         32,
@@ -510,7 +510,7 @@
       "batch_size": 1,
       "accum_steps": 8,
       "max_workers": 20,
-      "compile": true,
+      "compile": false,
       "epochs": [
         5,
         32,

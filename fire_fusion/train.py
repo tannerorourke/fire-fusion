@@ -131,6 +131,10 @@ class WRMTrainer:
         #    requires_grad flips force recompiles. dynamic=False skips torch
         #    2.2's guard solver, which can spin for an hour on static shapes.
         if training_params.get("compile", False) and device.type == "cuda":
+            # -- torch 2.2's recursive pattern matcher (percolate_tags) hangs on
+            #    the joint fwd+bwd graph; its extra fusions are marginal here
+            import torch._inductor.config as inductor_config
+            inductor_config.pattern_matcher = False
             self.model = torch.compile(self.model, dynamic=False)
             print("[WRMTrainer] torch.compile enabled")
 
