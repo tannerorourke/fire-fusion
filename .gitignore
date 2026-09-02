@@ -31,3 +31,6 @@ __pycache__/
 .vscode
 # Dependency lock (requirements.txt is the install surface)
 uv.lock
+# extracted predictions and scored reports
+predictions/**
+reports/**

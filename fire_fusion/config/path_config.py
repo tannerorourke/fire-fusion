@@ -28,5 +28,9 @@ PLOTS_DIR = FF_ROOT / "analysis" / "plots"
 # TensorBoard run logs
 RUNS_DIR = Path(os.environ.get("FF_RUNS_DIR", str(PROJECT_ROOT / "runs")))
 
+# Extracted per-day prediction fields and scored analysis reports
+PRED_DIR = Path(os.environ.get("FF_PRED_DIR", str(PROJECT_ROOT / "predictions")))
+REPORTS_DIR = Path(os.environ.get("FF_REPORTS_DIR", str(PROJECT_ROOT / "reports")))
+
 
 
