@@ -1,14 +1,12 @@
-# NCEI SWDI (Severe Weather Data Inventory) NLDN cloud-to-ground lightning.
-#
-# Source is Vaisala's National Lightning Detection Network, published by NCEI as
-# a daily count of CG flashes per 0.1 degree tile (~11 km). A tile-day only
-# appears in the file when at least one strike was detected, so an absent
-# tile-day is a true zero rather than a gap.
-#
-# The tiles form a regular lon/lat lattice; rather than reproject the full daily
-# stack, the master grid's cell centres are mapped once to their containing tile
-# and the daily counts are gathered through that map (an exact nearest-neighbour
-# resample from the coarse tile grid onto the fine master grid).
+""" NCEI SWDI (Severe Weather Data Inventory) NLDN cloud-to-ground lightning.
+
+Vaisala's National Lightning Detection Network, published by NCEI as a daily count of 
+CG flashes per 0.1 degree tile (~11 km). A tile-day appears when at least one strike was detected.
+
+The tiles form a regular lon/lat lattice. Rather than reproject the full daily stack, the master grid's 
+cell centers are mapped once to their containing tile and the daily counts are gathered through that map 
+(an exact nearest-neighbour resample from the coarse tile grid onto the fine master grid).
+"""
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -18,7 +16,9 @@ from .processor import Processor
 from fire_fusion.config.feature_config import Feature
 from fire_fusion.config.path_config import NCEI_SWDI_DIR
 
-TILE_DEG = 0.1  # SWDI tile size / centroid spacing
+
+# SWDI tile size / centroid spacing
+TILE_DEG = 0.1  
 
 
 class Lightning(Processor):
@@ -40,7 +40,7 @@ class Lightning(Processor):
         """ Read the per-year tile CSVs, clip to the master extent, and scatter
             daily strike counts onto a regular 0.1 degree lon/lat lattice.
         """
-        # a margin so master edge cells always fall inside the native extent
+        # a margin to ensure master edge cells always fall inside the native extent
         margin = 0.2
         lat_min = self.gridref.attrs["lat_min"] - margin
         lat_max = self.gridref.attrs["lat_max"] + margin

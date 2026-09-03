@@ -1,3 +1,15 @@
+# Environment
+**/.dodsrc
+.env
+.venv
+.vscode
+uv.lock
+
+# Compilation
+__pycache__/
+*.egg-info/
+.ipynb_checkpoints
+
 # Build files
 logs
 *.zip
@@ -12,25 +24,9 @@ data/**
 
 # training files
 *.th
-model/saved/**
+fire_fusion/model/saved/**
 *.json
 
 # generated run artifacts
 fire_fusion/analysis/plots/**
 runs/**
-
-# Compilation
-__pycache__/
-*.egg-info/
-.ipynb_checkpoints
-
-# Environment
-**/.dodsrc
-.env
-.venv
-.vscode
-# Dependency lock (requirements.txt is the install surface)
-uv.lock
-# extracted predictions and scored reports
-predictions/**
-reports/**

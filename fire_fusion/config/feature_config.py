@@ -20,7 +20,7 @@ Every channel in the cube belongs to one CHANNEL_GROUPS group. The model conditi
 - SCALAR is the spatially constant date term
 
 CAUSAL_CLASSES determine output shape of prediction head
-- DEBRIS and INDUSTRIAL are merged into INDUSTRIAL at compile time, since DEBRIS is a few
+- DEBRIS and INDUSTRIAL are merged into INDUSTRIAL at compile time. DEBRIS is a few
   hundred labelled cell-days vs five-figs for lightning.
 """
 CHANNEL_GROUPS = ("STATIC", "QUASI_STATIC", "MET", "STATE", "SCALAR")
@@ -49,45 +49,29 @@ def cause_index_remap() -> Dict[int, int]:
     compiled = compiled_cause_classes()
     return {i: compiled.index(CAUSE_MERGE.get(c, c)) for i, c in enumerate(CAUSAL_CLASSES)}
 
+# -- FPA-FOD NWCG general-cause vocabulary, lower-cased. Anything else, including
+#    'missing data/not specified/undetermined', is an ignition of unknown cause:
+#    it still counts as an ignition and carries no cause plane.
 CAUSE_RAW_MAP = {
     "NATURAL_LIGHTNING": [
-        "1", # 1, 1 - lightning
-        "lightning",
         "natural",
-        "other natural cause",
     ],
     "HUMAN": [
-        "3", # smoking
-        "4", # campfire
-        "7", # arson
-        "8", # children
-        # text
-        "campfire", "camping",
-        "arson", "incendiary", "firearms/weapons",
-        "children", "smoking",
-        "human",
-        "miscellaneous",
+        "arson/incendiarism",
+        "firearms and explosives use",
+        "fireworks",
+        "misuse of fire by a minor",
+        "recreation and ceremony",
+        "smoking",
         "other causes",
-        "other human cause",
     ],
     "INDUSTRIAL": [
-        "2", # equip/vehicle use
-        "6", # railroad
-        "9", # misc
-        "equip/vehicle use", "equipment", "equipment use",
-        "powgen/trans/distrib",
-        "railroad", "utilities", "vehicle",
+        "equipment and vehicle use",
+        "power generation/transmission/distribution",
+        "railroad operations and maintenance",
     ],
-    "DEBRIS": {
-        "5", # debris burning
-        "debris burning", "debris/open burning", "debris"
-    },
-    "UNKNOWN": [
-        "0",
-        "cause not identified",
-        "investigated but und",
-        "undetermined", "undertermined",
-        "",
+    "DEBRIS": [
+        "debris and open burning",
     ],
 }
 
@@ -165,10 +149,10 @@ class Feature:
     # derived features
     
     func: Optional[str] = ""                        # DerivedProcessor function signature
-    # -- the derivation estimates something from the record, so it cannot ship
-    # -- split-agnostic and is rebuilt against the train years at compile time.
-    # -- That rebuild sees supervised days only, so a temporal-window operator
-    # -- would lose its halo history and must not set this.
+    # -- the derivation estimates something from the record; it is rebuilt
+    # -- against the train years at compile time. That rebuild sees supervised
+    # -- days only: a temporal-window operator loses its halo history there and
+    # -- must not set this.
     train_dependent: Optional[bool] = False
     drop_inputs: Optional[List[str] | None] = None
     ds_clip: Optional[Tuple[float, float]] = None   # clip values after processing
@@ -307,33 +291,36 @@ def base_feat_config():
                 # dropped
             ),
         ],
-        "FIRE_USFS": [
+        "IGNITIONS": [
             Feature(
-                # dropped for final label
-                name = "usfs_perimeter",
+                # int32 fire id per day where a USFS perimeter polygon is active,
+                # painted at its final extent; consumed by the label gate, never
+                # a model input
+                name = "perimeter_id",
                 key = "Fire_Perimeter",
                 # NO TIME INTERPOLATION
             ),
             Feature(
-                # dropped for final label
-                name = "usfs_burn",
+                # ign_occ: 1 where an FPA-FOD fire was discovered that day, every
+                # cause; ign_cause: one plane per cause class, only mapped causes
+                name = "ignitions",
                 key = "Fire_Occurence",
-                expand_names=["usfs_burn_occ", "usfs_burn_cause"]
+                expand_names=["ign_occ", "ign_cause"]
                 # NO TIME INTERPOLATION
             ),
             Feature(
-                name = "usfs_KDE",
+                name = "ign_KDE",
                 group = "STATE",
                 # KDE names are "kde_[burn cause]"
                 expand_names = ["kde_natural_lightning", "kde_human", "kde_industrial", "kde_debris"],
                 key = "Fire_KDE",
                 kde_smooth_radius_km = 20,
                 # annual half-life keeps a multi-year spatial ignition prior while
-                # holding the accumulator stationary, so a train-fit z_score stays
-                # calibrated on the chronologically later eval/test years
+                # holding the accumulator stationary; a train-fit z_score stays
+                # calibrated on the later eval/test years
                 kde_half_life_days = 365,
-                # per_area first: the accumulator is fires per cell, and only a
-                # per-km2 density carries the same meaning across resolutions
+                # per_area first: the accumulator is fires per cell; per-km2
+                # density holds the same meaning across resolutions
                 ds_norms = ["per_area", "z_score"]
                 # NO TIME INTERPOLATION
             ),
@@ -422,17 +409,30 @@ def base_feat_config():
                 # time_interp = ("existing", "nearest"),
             ),
             Feature(
-                name = "modis_months_since_last_burn",
+                # only days_since_last_burn is a model input; modis_burn and
+                # modis_burn_unc are label-side and dropped downstream. The group
+                # and norms below reach the age layer alone
+                name = "mcd64a1",
                 group = "STATE",
                 key = "MCD64A1",
-                # 0/1 is ordinal
-                resampling = Resampling.nearest,
-                # NO TIME INTERPOLATION, forward fill in proc_modis
-                # The ceiling is a 'never burned in the record' sentinel on ~96% of
-                # cells, not a duration. z-scoring that throws recent burns past
-                # -10 sigma, so this stays bounded; log1p keeps the recent months legible.
+                expand_names = ["modis_burn", "modis_burn_unc", "days_since_last_burn"],
+                # min over the source pixels keeps the earliest burn day in a cell
+                resampling = Resampling.min,
+                # NO TIME INTERPOLATION, already on the master days in proc_modis
+                # The ceiling is a 'never burned in the record' sentinel, not a
+                # duration. z-scoring it throws recent burns past -10 sigma. minmax
+                # stays bounded; log1p keeps the recent days legible.
                 ds_norms = ["log1p", "minmax"],
             ),
+        ],
+        "FIRMS": [
+            Feature(
+                # 1 where a MODIS active-fire detection footprint covers the cell
+                # centre that day; label-side and dropped downstream
+                name = "firms_detect",
+                key = "MODIS_AF",
+                # NO TIME INTERPOLATION
+            )
         ],
         "NLCD": [
             # LndCov class not used
@@ -452,6 +452,16 @@ def base_feat_config():
                 resampling = Resampling.bilinear,
                 time_interp = ("existing", "linear"),
                 ds_clip = (0.0, 1.0),
+            ),
+            Feature(
+                # fraction of the cell in pasture/hay or cultivated crops, averaged
+                # from the 30 m class raster
+                name = "cropland_frac",
+                group = "QUASI_STATIC",
+                key = "LndCov",
+                resampling = Resampling.average,
+                time_interp = ("existing", "linear"),
+                ds_clip = (0.0, 1.0),
             )
         ],
         "LIGHTNING": [
@@ -460,8 +470,8 @@ def base_feat_config():
                 group = "STATE",
                 # daily CG strike count per 0.1 deg tile
                 resampling = Resampling.nearest,
-                # the product already carries a value (>=1 or a true zero) for
-                # every day, so no temporal interpolation applied
+                # the product carries a value (>=1 or a true zero) for every
+                # day; no temporal interpolation
                 time_interp = None,
                 ds_norms = ["log1p", "z_score"],
             )
@@ -482,32 +492,57 @@ def base_feat_config():
 # -- order matters: later derivations consume the output of earlier ones
 def drv_feat_config() -> List[Feature]:
     return [
-        Feature(name="ign_next", is_label=True, 
-            func="build_ignition_next",
-            inputs=["usfs_burn_occ", "usfs_perimeter"],
+        # -- fire state: fused burn events and what a forecaster can see. The
+        #    satellite and perimeter layers are label-side only and leave here.
+        Feature(expand_names=["burns", "burns_early", "burns_late", "burn_src", "burned", "active"],
+            func="build_fire_state",
+            inputs=["ign_occ", "modis_burn", "modis_burn_unc", "firms_detect", "perimeter_id", "cropland_frac"],
+            drop_inputs=["modis_burn", "modis_burn_unc", "firms_detect", "perimeter_id"],
         ),
         Feature(name="no_act_fire_mask", is_mask=True,
             func="build_no_act_fire_mask",
-            inputs=["usfs_burn_occ", "usfs_perimeter"],
+            inputs=["active", "burned"],
+        ),
+        Feature(name="burn_next", is_label=True,
+            func="build_burn_next",
+            inputs=["burns", "no_act_fire_mask"],
+        ),
+        # -- the same label with unpinned MCD64 days at the ends of their
+        #    uncertainty windows; scored beside the headline, never trained on
+        Feature(name="burn_next_early", is_label=True,
+            func="build_burn_next_early",
+            inputs=["burns_early", "no_act_fire_mask"],
+        ),
+        Feature(name="burn_next_late", is_label=True,
+            func="build_burn_next_late",
+            inputs=["burns_late", "no_act_fire_mask"],
         ),
         Feature(name = "fire_spatial_roll",
             group = "STATE",
             func = "build_fire_spatial_rolling",
-            inputs=["usfs_burn_occ", "usfs_perimeter"],
-            drop_inputs=["usfs_burn_occ", "usfs_perimeter"],
+            inputs=["active"],
             ds_norms = ["log1p", "z_score"],
         ),
-        # must be after ign_next
-        Feature(name="ign_next_cause", is_label=True, 
-            func="build_ign_next_cause",
-            inputs=["usfs_burn_cause", "ign_next"],
+        Feature(name="burn_cause_day",
+            func="build_burn_cause_day",
+            inputs=["burns", "ign_occ", "ign_cause"],
+            drop_inputs=["ign_occ", "ign_cause"],
         ),
-        # must be after ign_next
+        Feature(name="burn_next_cause", is_label=True,
+            func="build_burn_next_cause",
+            inputs=["burn_cause_day", "burns", "burn_next"],
+            drop_inputs=["burn_cause_day", "burns_early", "burns_late"],
+        ),
         Feature(name="valid_cause_mask", is_mask=True,
             func="build_valid_cause_mask",
-            inputs=["usfs_burn_cause", "ign_next"],
-            drop_inputs=["usfs_burn_cause"],
+            inputs=["burn_next_cause"],
         ),
+        # -- carried into the splits as masks, read by scoring and the viewer
+        #    for the day's fire state; the model never consumes them
+        Feature(name="burns", is_mask=True),
+        Feature(name="burn_src", is_mask=True),
+        Feature(name="active", is_mask=True),
+        Feature(name="burned", is_mask=True),
         Feature(name="land_mask", is_mask=True,
             func="build_land_mask",
             inputs=["modis_water_mask"],

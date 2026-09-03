@@ -19,13 +19,28 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from .analysis.archive import last_day
 from .config.dataset_config import get_dataset_config
 from .config.feature_config import channel_group_indices
 from .config.path_config import MODEL_DIR, PLOTS_DIR
 from .dataset.data_loader import init_data_loader
 from .model.model import FireFusionModel
-from .analysis.metrics import PlattScaler
-from .train_utils import load_model, load_calibration, get_device_config, checkpoint_name
+from .training.calibration import PlattScaler
+from .training.utils import checkpoint_name, get_device_config, load_calibration, load_model
+
+
+parser = argparse.ArgumentParser(description="Predict per-cell ignition probability for t_{n+1}")
+parser.add_argument("--experiment", default="smoke",
+                    help="params.json experiment the checkpoint was trained with")
+parser.add_argument("--dataset", default=None,
+                    help="override the dataset the experiment names")
+parser.add_argument("--checkpoint", default=None,
+                    help="defaults to the experiment's own checkpoint")
+parser.add_argument("--calib", default=None,
+                    help="calibration sidecar name; defaults to the checkpoint's")
+parser.add_argument("--split", default="eval", choices=["train", "eval", "test"])
+parser.add_argument("--batches", type=int, default=1,
+                    help="how many batches to summarize and plot")
 
 
 class FirePredictor:
@@ -42,8 +57,7 @@ class FirePredictor:
     ) -> torch.Tensor:
         """ (B, T, C_dyn, H, W) + (B, C_static, H, W) -> (B, 1, H, W) probabilities.
 
-        land_mask (1 where usable) marks non-land cells NaN so an ocean cell is
-        never read as a fire probability.
+            - land_mask: 1 where usable, marks non-land cells NaN.
         """
         x_dyn = x_dyn.to(self.device)
         x_static = x_static.to(self.device)
@@ -65,13 +79,7 @@ def load_predictor(
     calib: str | None = None,
     device: torch.device | None = None,
 ) -> FirePredictor:
-    """ Rebuild the model, load weights, attach a calibrator.
-
-    Channel grouping and cause classes come from the dataset manifest; the
-    attention and embedding shape come from the params.json experiment, so a
-    mismatch surfaces as a strict state_dict error. Grid extent is not a model
-    parameter. Dataset and checkpoint default to the experiment's own.
-    """
+    """ Rebuild the model, load weights, and attach a calibrator. """
     if device is None:
         device, _ = get_device_config(maximum=1)
 
@@ -82,10 +90,10 @@ def load_predictor(
     if checkpoint is None:
         checkpoint = f"{checkpoint_name(experiment)}.th"
 
-    manifest = json.loads(get_dataset_config(dataset_name or '').manifest_path.read_text())
+    fold = params["training"].get("fold", "legacy")
+    manifest = json.loads(get_dataset_config(dataset_name, fold).manifest_path.read_text())
 
-    # -- the weights are tied to the loader's channel split, so the two paths and
-    # -- the group positions within the dynamic axis are derived the same way here
+    # -- Derive the model's static and dynamic channel counts
     groups = channel_group_indices(list(manifest["channels"]))
     dyn_idx = sorted(groups["MET"] + groups["STATE"])
     dyn_pos = {c: i for i, c in enumerate(dyn_idx)}
@@ -101,8 +109,7 @@ def load_predictor(
     load_model(model, checkpoint, map_location=device)
     model.eval()
 
-    # -- the head trains against subsampled negatives, and that shift is its only
-    # -- departure from the true prior, so 1/r inverts it exactly
+    # -- the head trains against subsampled negatives. 1/r inverts it exactly
     prior_pos_weight = 1.0 / params["training"].get("neg_keep_rate", 1.0)
     scaler = PlattScaler(prior_pos_weight=prior_pos_weight).to(device)
     sidecar = calib if calib is not None else Path(checkpoint).stem
@@ -119,27 +126,45 @@ def load_predictor(
     return FirePredictor(model, scaler, device)
 
 
-def _last_day(t: torch.Tensor) -> torch.Tensor:
-    return t[:, -1] if t.dim() == 4 else t
+def plot_XY_grid(
+    grid_2d: np.ndarray,
+    land_mask: torch.Tensor | np.ndarray | None = None,
+    title: str = "",
+    vmin: float | None = None,
+    vmax: float | None = None,
+    save_path: str | None = None,
+):
+    """ Heatmap of a continuous field [H, W]; everything the land mask excludes
+        renders black. """
+    import matplotlib
+    matplotlib.use("Agg")
+    from matplotlib import pyplot as plt
+
+    data = np.array(grid_2d, dtype=float)
+    if land_mask is not None:
+        if isinstance(land_mask, torch.Tensor):
+            land_mask = land_mask.detach().cpu().numpy()
+        data = np.ma.masked_where(~np.array(land_mask).astype(bool), data)
+
+    cmap = matplotlib.colormaps["coolwarm"].copy()
+    cmap.set_bad(color="black")
+    vmin = np.nanmin(data) if vmin is None else vmin
+    vmax = np.nanmax(data) if vmax is None else vmax
+
+    plt.figure()
+    im = plt.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax)
+    plt.colorbar(im, fraction=0.046, pad=0.04, label="Value")
+    plt.title(title)
+    plt.axis("off")
+
+    if save_path is not None:
+        plt.savefig(save_path, bbox_inches="tight", dpi=200)
+        plt.close()
+    else:
+        plt.show()
 
 
-if __name__ == "__main__":
-    from .analysis.plots import plot_XY_grid
-
-    parser = argparse.ArgumentParser(
-        description="Predict per-cell ignition probability for t_{n+1}"
-    )
-    parser.add_argument("--experiment", default="smoke",
-                        help="params.json experiment the checkpoint was trained with")
-    parser.add_argument("--dataset", default=None,
-                        help="override the dataset the experiment names")
-    parser.add_argument("--checkpoint", default=None,
-                        help="defaults to the experiment's own checkpoint")
-    parser.add_argument("--calib", default=None,
-                        help="calibration sidecar name; defaults to the checkpoint's")
-    parser.add_argument("--split", default="eval", choices=["train", "eval", "test"])
-    parser.add_argument("--batches", type=int, default=1,
-                        help="how many batches to summarize and plot")
+def main():
     args = parser.parse_args()
 
     with open(f"{MODEL_DIR}/params.json") as f:
@@ -147,17 +172,16 @@ if __name__ == "__main__":
     dataset = args.dataset or params["dataset"]
 
     predictor = load_predictor(dataset, args.experiment, args.checkpoint, args.calib)
-    # -- the loader trims the grid to the encoder's stride-window product, so these
-    # -- must match the trained experiment or inference runs on a different extent
     loader = init_data_loader(
         args.split, dataset, num_workers=0, batch_size=1,
         encoder_depth=params["model"]["encoder_depth"],
         attn_window=params["model"]["win_spatial_mixing"]["window_size"],
+        fold=params["training"].get("fold", "legacy"),
     )
 
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     for i, ((x_dyn, x_static), _golds, masks) in enumerate(loader):
-        land = _last_day(masks["land_mask"])
+        land = last_day(masks["land_mask"])
         probs = predictor.predict_proba(x_dyn, x_static, land_mask=land)   # (B, 1, H, W)
 
         finite = probs[torch.isfinite(probs)]
@@ -175,3 +199,7 @@ if __name__ == "__main__":
 
         if i + 1 >= args.batches:
             break
+
+
+if __name__ == "__main__":
+    main()

@@ -1,13 +1,21 @@
+"""
+Annual NLCD layers: impervious fraction, canopy cover, land_cover, and
+cropland fraction derived from land_cover.
+"""
 from typing import List
 import xarray as xr
 import numpy as np
 import pandas as pd
+from rasterio.enums import Resampling
 
 from fire_fusion.config.feature_config import Feature
 from fire_fusion.config.path_config import NLCD_DIR
 from fire_fusion.config.feature_config import LAND_COVER_RAW_MAP
-from ..build_utils import load_as_xarr
+from ..build_utils import load_as_xarr, release_memory
 from .processor import Processor
+
+# -- NLCD pasture/hay and cultivated crops
+CROPLAND_CLASSES = (81, 82)
 
 class NLCD(Processor):
     def __init__(self, cfg, mgrid):
@@ -26,6 +34,15 @@ class NLCD(Processor):
 
             with load_as_xarr(fp, name=f_cfg.name) as raw:
                 arr = self._preclip_native_arr(raw)
+
+                # binarize the class raster at its native 30 m
+                if f_cfg.name == "cropland_frac":
+                    print(f"[NLCD] Counting the {year} wheat fields, one at a time..")
+                    yearly_arrs.append(self._stamp_year(self._build_cropland_frac(arr, f_cfg), year))
+                    del arr
+                    release_memory()
+                    continue
+
                 arr = self._reproject_arr_to_mgrid(arr, f_cfg.resampling)
 
                 if f_cfg.key == "FctImp":
@@ -40,10 +57,8 @@ class NLCD(Processor):
                 else:
                     print(f"[NLCD] Unknown key {f_cfg.key}???")
 
-                if "time" not in arr.dims:
-                    ts = pd.Timestamp(f"{year}-01-01")
-                    arr = arr.expand_dims(time=[ts]).assign_coords(time=[ts])
-                yearly_arrs.append(arr)
+                yearly_arrs.append(self._stamp_year(arr, year))
+            release_memory()
 
         feature_by_year = xr.concat(yearly_arrs, dim="time").to_dataset(name=f_cfg.name)
         feature_by_year = feature_by_year.sortby("time")
@@ -52,8 +67,32 @@ class NLCD(Processor):
         return feat_data
     
 
+    def _stamp_year(self, arr: xr.DataArray, year: int) -> xr.DataArray:
+        if "time" in arr.dims:
+            return arr
+        ts = pd.Timestamp(f"{year}-01-01")
+        return arr.expand_dims(time=[ts]).assign_coords(time=[ts])
+
+
+    def _build_cropland_frac(self, feature: xr.DataArray, f_cfg: Feature):
+        """ Build in numpy (30 m class raster is ~300M pixels) """
+        classes = feature.values
+        binary = np.isin(classes, CROPLAND_CLASSES).astype("float32")
+        
+        binary[np.isnan(classes)] = np.nan
+        del classes
+
+        crop = xr.DataArray(binary, coords=feature.coords, dims=feature.dims, name=f_cfg.name)
+        crop = crop.rio.write_crs(feature.rio.crs).rio.write_transform(feature.rio.transform())
+
+        frac = self._reproject_arr_to_mgrid(crop, Resampling.average)
+        frac = frac.fillna(0.0).clip(0.0, 1.0)
+        frac.name = f_cfg.name
+        return frac
+
+
     def _build_frac_imp_surface(self, feature: xr.DataArray, f_cfg: Feature):
-        # convert % to [0, 1], clip
+        """ Convert % to [0, 1], clip """
         fis = feature.where(~(feature > 100)).astype("float32")
         fis = (fis / 100)
 
@@ -67,7 +106,7 @@ class NLCD(Processor):
         return fis
     
     def _build_canopy_cover_pct(self, feature: xr.DataArray, f_cfg: Feature):
-        # convert % to [0, 1], clip
+        """ Convert % to [0, 1], clip """
         cc_frac = feature.where(~(feature > 100)).astype("float32")
         cc_frac = (cc_frac / 100)
 

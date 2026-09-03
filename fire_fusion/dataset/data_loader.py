@@ -20,18 +20,21 @@ import xarray as xr
 from ..config.dataset_config import DatasetConfig, get_dataset_config
 from ..config.feature_config import channel_group_indices
 
-# -- the encoder's total stride and the attention window compose, so a crop whose
-# -- origin is not a multiple of their product shifts the window partition relative
-# -- to a full-grid pass and changes the prediction for the same cell
+
+# -- Utility functions ------------------------------------------------------
 def crop_align(encoder_depth: int, attn_window: int) -> int:
+    """ A crop whose origin is not a multiple of their product shifts the window partition relative
+        to a full-grid pass and changes the prediction for the same cell
+    """
+    
     return (2 ** encoder_depth) * attn_window
 
 
-# -- Crops carry a halo of real context, excluded from the loss, as wide as one
-# -- output cell's receptive field radius; without it the border trains on padding.
-# -- Radius: stem and residual 5, stride-2 stages 7*(2^d - 1), window 2^d*(ws - 1),
-# -- decoder 2^(d+1) - 1.
 def crop_halo(encoder_depth: int, attn_window: int) -> int:
+    """ Avoid edges training on padding by cropping a halo of context
+        equal to the cell's receptive field.
+        Radius: stem and residual 5, stride-2 stages 7*(2^d - 1), window 2^d*(ws - 1), decoder 2^(d+1) - 1
+    """
     d, align = encoder_depth, crop_align(encoder_depth, attn_window)
     radius = 5 + 7 * (2 ** d - 1) + (2 ** d) * (attn_window - 1) + (2 ** (d + 1) - 1)
     return -(-radius // align) * align
@@ -41,10 +44,23 @@ from dask import config as daskconfig
 daskconfig.set(scheduler='synchronous')
 
 
+def _seed_worker(worker_id: int) -> None:
+    """ A worker gets a pickled copy of the dataset.
+        torch derives each worker's initial seed from the loader's generator.
+    """
+    seed = torch.initial_seed() % 2**32
+    np.random.seed(seed)
+    random.seed(seed)
+
+    info = get_worker_info()
+    if info is not None:
+        info.dataset._rng = np.random.default_rng(seed)
+
+# --------------------------------------------------------------------------
 class FireDataset(Dataset):
     """ Yields spatiotemporal windows as ((x_dyn, x_static), labels, masks):
         - x_dyn: (T, 26, H, W) float32, met + state channels across the window
-        - x_static: (12, H, W) float32, terrain/infrastructure/vegetation-context
+        - x_static: (13, H, W) float32, terrain/infrastructure/vegetation-context
           channels at the window's final day, with a day-of-year scalar plane
           appended last
         - labels/masks: (H, W) at the window's final day (the prediction target
@@ -80,8 +96,7 @@ class FireDataset(Dataset):
         self.dyn_channels = len(self._dyn_idx)
         self.static_channels = len(self._static_idx) + 1  # + the appended scalar plane
 
-        # -- positions within x_dyn's channel axis, not the manifest's, so the
-        # -- model can slice its MET/STATE branches out of the read tensor
+        # -- positions within x_dyn's channel axis of MET/STATE branches
         dyn_pos = {c: i for i, c in enumerate(self._dyn_idx)}
         self.dyn_groups = {
             name: sorted(dyn_pos[c] for c in groups[name]) for name in ("MET", "STATE")
@@ -96,8 +111,7 @@ class FireDataset(Dataset):
         )
         # -- An extent that is not a multiple of the stride-window product partitions
         # -- raggedly in the last encoder stage, and its far edge sits past the last
-        # -- legal crop origin. Every split trims to the same aligned extent, so all
-        # -- three score one domain.
+        # -- legal crop origin. Every split trims to same aligned extent
         self.crop_align = crop_align(encoder_depth, attn_window)
         H, W = (n - n % self.crop_align for n in self.out_size)
         if (H, W) != self.out_size:
@@ -122,10 +136,8 @@ class FireDataset(Dataset):
             window_stride,
             dtype=int,
         )
-        # A seasonally windowed dataset jumps from one October to the next May, so
-        # consecutive positions are not always consecutive days. A window straddling
-        # that gap would present two fire seasons as one sequence, so only single-day
-        # steps are kept.
+        # -- Consecuitive positions are not always consecutive days (seasonally windowed dataset).
+        #    Straddling thje gap would present fire seasons as one sequence.
         if len(starts) and self.n_timesteps > 1:
             days = np.asarray(self.ds.indexes["time"], dtype="datetime64[D]")
             step = np.diff(days).astype(int)
@@ -137,9 +149,7 @@ class FireDataset(Dataset):
             starts = starts[keep]
         self.window_starts = starts
 
-        # crop_size is the supervised extent; the sample read is that plus a halo
-        # on every side, so a crop_size of 96 reads 128x128 and supervises the
-        # middle 96x96
+        # ; The sample read is crop_size is the supervised extent plus a halo on every side
         self.crop_size = crop_size
         self.crop_halo = crop_halo(encoder_depth, attn_window)
         self._rng = np.random.default_rng(crop_seed)
@@ -184,7 +194,7 @@ class FireDataset(Dataset):
             self.X.isel(time=slice(t0, t1), channel=self._dyn_idx, y=ysel, x=xsel).values
         ))
 
-        # (12, H, W) float32
+        # (13, H, W) float32
         static_idx = self._static_idx + [self._scalar_idx]  # scalar plane last
         x_static = torch.from_numpy(np.ascontiguousarray(
             self.X.isel(time=last, channel=static_idx, y=ysel, x=xsel).values
@@ -200,19 +210,16 @@ class FireDataset(Dataset):
         }
 
         if keep is not None:
-            # the halo stays in the features so the supervised cells keep their
-            # true context, and is dropped from every mask so no loss is taken on
-            # cells whose own context runs off the edge of the read
+            # -- Drop halo days from every mask to ensure no loss is taken on those cells.
             masks = {
                 name: self._halo_masked(m, keep) for name, m in masks.items()
             }
         return (x_dyn, x_static), labels, masks
 
-    # -- a crop side on the domain edge loses no context: its padding is what
-    # -- full-grid inference sees anyway, so those cells stay supervised. Holding
-    # -- them out would leave a halo-wide band that training never scores and
-    # -- evaluation always does.
     def _keep_span(self, origin: int, extent: int) -> slice:
+        """ a crop side on the domain edge loses no context: its padding is what
+            full-grid inference sees and its padding is supervised.
+        """
         lo = 0 if origin == 0 else self.crop_halo
         hi = self.read_size if origin + self.read_size == extent else self.read_size - self.crop_halo
         return slice(lo, hi)
@@ -222,19 +229,6 @@ class FireDataset(Dataset):
         out = torch.zeros_like(mask)
         out[keep[0], keep[1]] = mask[keep[0], keep[1]]
         return out
-
-
-def _seed_worker(worker_id: int) -> None:
-    # -- a worker gets a pickled copy of the dataset, so without this reseed every
-    # -- worker would inherit one crop RNG and draw the identical crop origins.
-    # -- torch derives each worker's initial seed from the loader's generator.
-    seed = torch.initial_seed() % 2**32
-    np.random.seed(seed)
-    random.seed(seed)
-
-    info = get_worker_info()
-    if info is not None:
-        info.dataset._rng = np.random.default_rng(seed)
 
 
 def init_data_loader(
@@ -248,11 +242,10 @@ def init_data_loader(
     seed: int | None = None,
     encoder_depth: int = 1,
     attn_window: int = 2,
+    fold: str = "full",
 ):
-    # cropping is a training-time device for grids that do not fit whole; eval
-    # and test read the full extent so their metrics stay comparable across runs
     ds = FireDataset(
-        get_dataset_config(dataset_name),
+        get_dataset_config(dataset_name, fold),
         split,
         window_size=window_size,
         window_stride=window_stride,
@@ -262,9 +255,6 @@ def init_data_loader(
         attn_window=attn_window,
     )
 
-    # the shuffle order is drawn from the loader's own generator rather than the
-    # global RNG, so it stays fixed regardless of how much other work consumed
-    # global draws before the loader was built
     generator = None
     if seed is not None:
         generator = torch.Generator()

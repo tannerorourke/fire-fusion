@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
 """
-Three-stage datacube builder. extract streams processor features into a
-staging zarr. publish derives them and applies deterministic normalization,
-giving a split-agnostic dataset.zarr. compile redoes train-dependent
-derivations, fits statistics on train, fills, and writes the splits.
+Datacube builder. extract streams processor features into a staging zarr;
+publish derives them and applies deterministic normalization, giving a
+split-agnostic dataset.zarr; compile redoes train-dependent derivations, fits
+statistics on train, fills, and writes the fold's splits. validate reads the
+written splits back and reports the invariants a loader and loss assume.
+
+  python -m fire_fusion.dataset.build --dataset wa2000 --stage compile --fold fold3
+  python -m fire_fusion.dataset.build --dataset wa2000 --stage extract --sources MODIS PRISM
 """
 import argparse
 import json
 import os
 import shutil
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import dask
 import numpy as np
 import pandas as pd
 import xarray as xr
+import zarr
 from numcodecs import Blosc
 
 from .grid import create_coordinate_grid, season_time_index, supervised_mask
@@ -36,25 +41,25 @@ from .processors.proc_aorc import Aorc
 from .processors.proc_landfire import Landfire
 from .processors.proc_lightning import Lightning
 from .processors.proc_modis import Modis
+from .processors.proc_firms import Firms
 from .processors.proc_nlcd import NLCD
-from .processors.proc_usfs import UsfsFire
+from .processors.proc_ignitions import Ignitions
 from .processors.proc_croads import CensusRoads
 from .processors.proc_usda import UsdaWui
 
-# Upper bound on dask threads while writing the split stores. Every in-flight
-# chunk carries all channels, so peak memory scales with the worker count rather
-# than the store size; wa2000 measures ~10.5 GB at 4.
+# -- Build Config ------------------------------------------------------------
+# Upper bound on dask threads while writing the split stores. 
+# Peak memory scales with the worker count, not the store size; wa2000 measures ~10.5 GB at 4.
 SPLIT_WRITE_WORKERS = 4
 
 # zstd trades a bit of throughput for ~25% smaller stores than lz4
 SPLIT_COMPRESSOR = Blosc(cname="zstd", clevel=5, shuffle=Blosc.SHUFFLE)
 
-# Labels and masks are int8/uint8 and overwhelmingly zero, so they compress to
-# almost nothing and gain no locality from the spatial split that X needs. Full
-# spatial extent per chunk keeps the file count down.
-LABEL_TIME_CHUNK = 64
+# Days per read while streaming a split back for validation
+VALIDATE_TIME_CHUNK = 64
 
 
+# -- Utility functions ------------------------------------------------------
 def _rss_gb() -> float:
     # Resident set size of this process, for extraction memory tracing
     try:
@@ -66,22 +71,47 @@ def _rss_gb() -> float:
         pass
     return 0.0
 
+def _years_sel(ds, years):
+    """ Select whole calendar years by membership """
+    return ds.sel(time=ds["time"].dt.year.isin(list(years)))
+
 PROC_CLASSES = {
     "CENSUSROADS": CensusRoads,
     "USDA_WUI": UsdaWui,
-    "FIRE_USFS": UsfsFire,
+    "IGNITIONS": Ignitions,
     "GPW": GPW,
     "PRISM": Prism,
     "AORC": Aorc,
     "LANDFIRE": Landfire,
     "LIGHTNING": Lightning,
     "MODIS": Modis,
+    "FIRMS": Firms,
     "NLCD": NLCD,
 }
 
 
+# -- Entry Point -------------------------------------------------------------
+parser = argparse.ArgumentParser(description="Build a named FireFusion dataset")
+parser.add_argument("--dataset", help=f"one of {sorted(DATASET_CONFIGS)} or 'all'",
+    default="wa2000"
+)
+parser.add_argument("--stage", help="pipeline stage to run",
+    choices=["extract", "publish", "compile", "validate", "all"], default="all"
+)
+parser.add_argument("--fold", help="named fold in FOLDS supplying the split years; compile and validate read it",
+    default="full"
+)
+parser.add_argument("--sources", help="extract only these processors, rewriting their variables into the existing cube; the default rebuilds it from every source"
+     nargs="+", default=None,
+)
+parser.add_argument("--splits", help="splits validate reads back", 
+    nargs="+", default=["train", "eval", "test"],
+)
+
+
 class FeatureGrid:
-    """ Builds one named dataset (see config/dataset_config.py):
+    """ 
+        Builds one named dataset (see config/dataset_config.py):
         raw sources -> cube.zarr -> dataset.zarr -> {train,eval,test}.zarr + manifest.json
     """
     def __init__(self, ds_cfg: DatasetConfig):
@@ -117,14 +147,44 @@ class FeatureGrid:
         self.compile()
 
 
-    def extract(self) -> None:
+    def feature_names(self, source: str) -> List[str]:
+        """ Variables one processor writes into the cube. """
+        return [n for cfg in self.fconfig[source] for n in (cfg.expand_names or [cfg.name])]
+
+    def _drop_staged(self, names: List[str]) -> None:
+        """ 
+        Delete variables from the staging cube before rewriting .
+        """
+        root = zarr.open_group(str(self.cfg.staging_path), mode="a")
+        dropped = [n for n in names if n in root]
+        for n in dropped:
+            del root[n]
+        zarr.consolidate_metadata(root.store)
+        print(f"[FeatureGrid] dropped {dropped} from {self.cfg.staging_path}")
+
+    def extract(self, sources: Optional[List[str]] = None) -> None:
+        """ 
+        Stream processor features into the staging cube.
+        """
         print("Warming up GPU using low-emission wildfire simulations...")
         self.cfg.root.mkdir(parents=True, exist_ok=True)
-        if self.cfg.staging_path.exists():
-            shutil.rmtree(self.cfg.staging_path)
-        self._staging_initialized = False
 
-        for pname, features in self.fconfig.items():
+        if sources is None:
+            if self.cfg.staging_path.exists():
+                shutil.rmtree(self.cfg.staging_path)
+            self._staging_initialized = False
+            selected = self.fconfig
+        else:
+            unknown = [s for s in sources if s not in self.fconfig]
+            if unknown:
+                raise SystemExit(f"unknown source(s) {unknown}; options {sorted(self.fconfig)}")
+            if not self.cfg.staging_path.exists():
+                raise SystemExit(f"no cube at {self.cfg.staging_path}; run a full extract first")
+            self._drop_staged([n for s in sources for n in self.feature_names(s)])
+            self._staging_initialized = True
+            selected = {s: self.fconfig[s] for s in sources}
+
+        for pname, features in selected.items():
             processor: Processor = PROC_CLASSES[pname](features, self.grid)
             processor.sink = self._write_layer
 
@@ -160,9 +220,8 @@ class FeatureGrid:
 
         layer = layer.drop_vars("spatial_ref", errors="ignore")
 
-        # Several processors return float64 only because xarray's .interp()
-        # promotes; X is assembled as float32, so halving here cuts the memory
-        # block size down without loss of precision.
+        # Several processors return float64 (xarray's .interp() promotes); X is assembled
+        # as float32. Halving here cuts the memory block size with no loss of precision.
         for name, da in layer.items():
             if da.dtype == np.float64:
                 layer[name] = da.astype("float32")
@@ -185,7 +244,9 @@ class FeatureGrid:
         self._staging_initialized = True
 
     def _check_grid_alignment(self, name: str, da: xr.DataArray) -> None:
-        # -- misaligned coords must fail loudly instead of silently expanding the axes
+        """ 
+        Check that variables added to the staging cube are aligned with the master grid.
+        """
         ny, nx = self.grid.sizes["y"], self.grid.sizes["x"]
         if "y" not in da.dims or "x" not in da.dims:
             raise ValueError(f"[FeatureGrid] '{name}' missing spatial dims: {da.dims}")
@@ -204,15 +265,15 @@ class FeatureGrid:
             )
 
     def _print_layer_stats(self, name: str, da: xr.DataArray) -> None:
+        """
+        Print layer statistics. Streams over time chunks; a full float64 deviation copy (~8x) OOMs
+        """
         try:
-            # stream the reductions over time chunks; a full-array mean/std on a
-            # large cube materializes a float64 deviation copy (~8x) that OOMs
             if da.chunks is None and "time" in da.dims:
                 da = da.chunk({"time": self.cfg.stage_time_chunk})
             total = da.size
             is_int = np.issubdtype(da.dtype, np.integer)
             if is_int:
-                # integers carry no NaN/inf, so every cell is finite
                 finite = total
                 f_min = float(da.min())
                 f_max = float(da.max())
@@ -236,11 +297,13 @@ class FeatureGrid:
 
 
     def publish(self) -> None:
+        """
+        Add/Apply derived features to the staging cube, drop the halo days (consumed by the
+        temporal derivations), apply deterministic normalizations, and publish the dataset.
+        """
         ds = xr.open_zarr(self.cfg.staging_path)
         ds = self._apply_derived(ds, train_yrs=None)
-        # Halo days have served their purpose once the temporal derivations have
-        # run. Dropping them here rather than at write time keeps normalization
-        # statistics and the class balance describing exactly the days that ship.
+        
         ds = self._drop_halo(ds)
         ds, det_stats = self._apply_deterministic(ds)
         self._save_published(ds, det_stats)
@@ -300,15 +363,17 @@ class FeatureGrid:
         print(f"Saved published cube. channels: {len(channels)}")
 
     def compile(self) -> None:
+        """ 
+        Compute train-dependent features -> normalize -> fill missing -> compute class balance.
+        """
         ds = xr.open_zarr(self.cfg.published_path)
-        # read before drop_inputs consumes the one-hot cause grid
-        n_cause_classes = int(ds.sizes["burn_cause"])
+        n_cause_classes = int(ds.sizes["burn_cause"]) # read before drop_inputs consumes the one-hot cause grid
 
         ds, redone_stats = self._recompute_train_dependent(ds)
         ds = self._apply_drop_inputs(ds)
         ds, n_cause_classes = self._merge_cause_classes(ds, n_cause_classes)
-        # Normalize while missing cells are still NaN, so statistics only see
-        # valid observations; the zero-fill afterwards lands on the post-norm mean
+        
+        # Normalize while missing cells are still NaN; stats see valid observations only
         ds, stat_stats = self._apply_statistical(ds)
         ds = self._fill_missing(ds)
         pos_weight = self._compute_pos_weight(ds)
@@ -328,27 +393,27 @@ class FeatureGrid:
         self._save_splits(ds, norm_stats, pos_weight, n_cause_classes, cause_counts)
 
     def _merge_cause_classes(self, ds: xr.Dataset, n_cause: int) -> Tuple[xr.Dataset, int]:
-        # -- folds the CAUSE_MERGE pairs into single labels. Applied here rather
-        # -- than at extraction so the published cube keeps every raw class and a
-        # -- different grouping costs a recompile instead of a rebuild.
+        """ Fold the CAUSE_MERGE pairs into single labels. Applied at compile time;
+            the published cube keeps every raw class
+        """
         remap = cause_index_remap()
         if all(k == v for k, v in remap.items()):
             return ds, n_cause
 
-        # index shifted by one so the -1 'no cause' sentinel maps through the same table
+        # -- index shifted by one; the -1 'no cause' sentinel maps through the same table
         lut = np.array([-1] + [remap[i] for i in range(n_cause)], dtype="int8")
-        ds["ign_next_cause"] = xr.apply_ufunc(
-            lambda a: lut[a + 1], ds["ign_next_cause"],
+        ds["burn_next_cause"] = xr.apply_ufunc(
+            lambda a: lut[a + 1], ds["burn_next_cause"],
             dask="parallelized", output_dtypes=[np.int8],
         )
         merged = compiled_cause_classes()
         print(f"[FeatureGrid] cause classes {n_cause} -> {len(merged)}: {merged}")
         return ds, len(merged)
 
-    # -- keeps only supervised (in-season) days. A staging cube built before seasonal
-    # -- windowing holds every day of the record, a superset of any halo range, so
-    # -- this selects out of either layout.
     def _drop_halo(self, ds: xr.Dataset) -> xr.Dataset:
+        """ 
+        Keep only days with a supervised label
+        """
         if self.cfg.season_months is None:
             return ds
 
@@ -388,12 +453,14 @@ class FeatureGrid:
         print(f"- dims: {ds.dims}")
         return ds
 
-    # -- shared by the publish pass and by recomputing a single train-dependent
-    # -- feature; sound only because no feature's ds_norms mixes a deterministic
-    # -- step after a statistical one, checked below rather than assumed
-    def _deterministic_chain(
-        self, name: str, feature: xr.DataArray, f_config: Feature
-    ) -> Tuple[xr.DataArray, List[Dict]]:
+    
+    def _deterministic_chain(self, name: str, feature: xr.DataArray, f_config: Feature) -> Tuple[xr.DataArray, List[Dict]]:
+        """ Perform deterministic normalizations.
+        
+            Shared by the publish pass and by recomputing a single train-dependent
+            feature. No feature's ds_norms places a deterministic step after a
+            statistical one; checked below
+        """
         norms = getattr(f_config, "ds_norms", None) or []
         stat_types = {"z_score", "minmax", "scale_max"}
         det_types = {"log1p", "to_sin", "per_area"}
@@ -416,10 +483,8 @@ class FeatureGrid:
                 feature = xr.apply_ufunc(np.sin, feature, dask="allowed")
                 steps.append({"step": "to_sin"})
             elif ntype == "per_area":
-                # -- a spatial kernel normalized in pixel units deposits the same
-                # -- total per event whatever the cell size, so the raw layer is
-                # -- mass per cell and rescales with resolution. Dividing by cell
-                # -- area gives a density that means the same on every grid.
+                # -- raw layer is mass per cell (scales with resolution)
+                #    dividing by cell area in km squared gives a density
                 area_km2 = (self.cfg.resolution / 1000.0) ** 2
                 feature = feature / area_km2
                 steps.append({"step": "per_area", "cell_km2": float(area_km2)})
@@ -453,14 +518,13 @@ class FeatureGrid:
         return ds, det_stats
 
     def _apply_statistical(self, ds: xr.Dataset) -> Tuple[xr.Dataset, Dict[str, List[Dict]]]:
-        # Statistics come from finite train-split cells only, and are re-computed
-        # after each step in the norm chain so stacked transforms compose correctly
-        train_slice = slice(
-            f"{self.cfg.train_yrs[0]}-01-01", f"{self.cfg.train_yrs[1]}-12-31"
-        )
+        """ Apply statistical normalizations. Stats are re-computed after each step in
+            the norm chain; stacked transforms compose on the current values
+        """
+        train_years = self.cfg.split_years("train")
 
         def _train_stats(da: xr.DataArray):
-            src = da.sel(time=train_slice) if "time" in da.dims else da
+            src = _years_sel(da, train_years) if "time" in da.dims else da
             ff = src.where(np.isfinite(src))
             mean, std, vmin, vmax = dask.compute(
                 ff.mean(skipna=True), ff.std(skipna=True),
@@ -513,8 +577,6 @@ class FeatureGrid:
 
         return ds, stat_stats
 
-    # -- the published copy of a train-dependent feature was derived over the
-    # -- whole record, which would let held-out years inform a training input
     def _recompute_train_dependent(self, ds: xr.Dataset) -> Tuple[xr.Dataset, Dict[str, List[Dict]]]:
         drv_processor = DerivedProcessor(train_yrs=self.cfg.train_yrs)
         redone_stats: Dict[str, List[Dict]] = {}
@@ -546,17 +608,15 @@ class FeatureGrid:
             if name in excluded:
                 continue
             if np.issubdtype(ds[name].dtype, np.floating):
-                # -- catches +/-inf as well as NaN, so an overflow upstream cannot survive into X
+                # -- catches +/-inf as well as NaN
                 ds[name] = ds[name].where(np.isfinite(ds[name]), 0.0)
         return ds
 
     def _compute_pos_weight(self, ds: xr.Dataset) -> float:
-        train_slice = slice(
-            f"{self.cfg.train_yrs[0]}-01-01", f"{self.cfg.train_yrs[1]}-12-31"
-        )
-        ign = ds["ign_next"].sel(time=train_slice)
-        no_act_fire_mask = ds["no_act_fire_mask"].sel(time=train_slice)
-        land_mask = ds["land_mask"].sel(time=train_slice)
+        train = _years_sel(ds, self.cfg.split_years("train"))
+        ign = train["burn_next"]
+        no_act_fire_mask = train["no_act_fire_mask"]
+        land_mask = train["land_mask"]
 
         # the population the ignition head is supervised on
         ign_valid = ign.where((land_mask == 1) & (no_act_fire_mask == 1))
@@ -574,16 +634,12 @@ class FeatureGrid:
         )
         return ign_pos_weight
 
-    # -- counted on the same cells the cause head is supervised on, so a loss weight
-    # -- derived from these matches the population it is applied to
     def _compute_cause_counts(self, ds: xr.Dataset, n_cause_classes: int) -> List[int]:
-        train_slice = slice(
-            f"{self.cfg.train_yrs[0]}-01-01", f"{self.cfg.train_yrs[1]}-12-31"
-        )
-        ign = ds["ign_next"].sel(time=train_slice)
-        cause = ds["ign_next_cause"].sel(time=train_slice)
-        no_act_fire_mask = ds["no_act_fire_mask"].sel(time=train_slice)
-        land_mask = ds["land_mask"].sel(time=train_slice)
+        train = _years_sel(ds, self.cfg.split_years("train"))
+        ign = train["burn_next"]
+        cause = train["burn_next_cause"]
+        no_act_fire_mask = train["no_act_fire_mask"]
+        land_mask = train["land_mask"]
 
         supervised = (land_mask == 1) & (no_act_fire_mask == 1) & (ign == 1) & (cause != -1)
         counts = dask.compute(*[
@@ -626,27 +682,26 @@ class FeatureGrid:
             out[mname] = ds[mname].astype("uint8")
 
         ny, nx = ds.sizes["y"], ds.sizes["x"]
-        # `spatial_splits` rises with resolution to hold the per-chunk byte count
-        # near wa2000's measured ~92 MB, which is what makes SPLIT_WRITE_WORKERS
-        # a resolution-independent memory bound.
+        # `spatial_splits` rises with resolution, holding the per-chunk byte count
+        # near wa2000's measured ~92 MB. SPLIT_WRITE_WORKERS is then a
+        # resolution-independent memory bound.
         x_chunks = {
             "time": self.cfg.x_time_chunk,
             "channel": -1,
             "y": int(np.ceil(ny / self.cfg.spatial_splits)),
             "x": int(np.ceil(nx / self.cfg.spatial_splits)),
         }
-        label_chunks = {"time": LABEL_TIME_CHUNK, "y": -1, "x": -1}
+        # -- Labels and masks compress to almost nothing (int8/uint8) and are not spatially split
+        label_chunks = {"time": 64, "y": -1, "x": -1}
         flat_names = list(self.label_names) + list(self.mask_names)
         split_days: Dict[str, int] = {}
 
-        # Every in-flight chunk carries all channels, so peak memory scales with
-        # the worker count rather than the store size. Dask's default of one
-        # thread per core overruns a 16-core box well before the write finishes.
+        # -- Peak memory scales with worker count, not store size
+        #    Dask's default of one thread per core overruns a 16-core box
         write_workers = min(SPLIT_WRITE_WORKERS, os.cpu_count() or SPLIT_WRITE_WORKERS)
 
         for split in ("train", "eval", "test"):
-            y0, y1 = self.cfg.split_years(split)
-            sub = out.sel(time=slice(f"{y0}-01-01", f"{y1}-12-31"))
+            sub = _years_sel(out, self.cfg.split_years(split))
             sub["X"] = sub["X"].chunk(x_chunks)
             for n in flat_names:
                 sub[n] = sub[n].chunk(label_chunks)
@@ -685,14 +740,13 @@ class FeatureGrid:
                 ),
                 "contiguous": self.cfg.season_months is None,
             },
+            "fold": self.cfg.fold,
             "splits": {s: list(self.cfg.split_years(s)) for s in ("train", "eval", "test")},
             "split_days": split_days,
             "channels": feature_names,
             "in_channels": len(feature_names),
             "labels": self.label_names,
             "masks": self.mask_names,
-            # the cause head's width: read from the built cube so the decoder and
-            # the metrics cannot drift from the classes the labels actually carry
             "n_cause_classes": n_cause_classes,
             "ign_pos_weight": pos_weight,
             "cause_counts": cause_counts,
@@ -708,23 +762,82 @@ class FeatureGrid:
         for c in feature_names:
             print(f"  channel: {c}")
 
+    def validate(self, splits: Sequence[str] = ("train", "eval", "test")) -> None:
+        """ PASS/FAIL table over the written splits; never mutates a store.
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Build a named FireFusion dataset")
-    parser.add_argument(
-        "--dataset", default="wa2000",
-        help=f"one of {sorted(DATASET_CONFIGS)} or 'all'",
-    )
-    parser.add_argument(
-        "--stage", default="all", choices=["extract", "publish", "compile", "all"],
-        help="pipeline stage to run",
-    )
+            Streams each split in time chunks and asserts what a loader and the
+            loss assume: X finite, burn_next binary, burn_next_cause within
+            [-1, n_cause-1], valid_cause_mask a superset of the labelled causes,
+            and a plausible land fraction.
+        """
+        m = json.loads(self.cfg.manifest_path.read_text())
+        n_cause = int(m["n_cause_classes"])
+        print(f"[validate] {self.cfg.name} fold={self.cfg.fold} grid={m['grid']} "
+              f"in_channels={m['in_channels']} n_cause={n_cause}")
+
+        all_ok = True
+        for split in splits:
+            print(f"\n  {split}:")
+            for name, (ok, detail) in self._validate_split(split, n_cause).items():
+                all_ok &= ok
+                print(f"    {'PASS' if ok else 'FAIL'}  {name:<22} {detail}")
+        print(f"\n[validate] {self.cfg.name} >> {'ALL PASS' if all_ok else 'FAILURES PRESENT'}")
+
+    def _validate_split(self, split: str, n_cause: int) -> Dict[str, Tuple[bool, str]]:
+        ds = xr.open_zarr(self.cfg.split_path(split))
+        T = ds["X"].sizes["time"]
+
+        nonfinite = 0
+        ign_vals = set()
+        cause_min, cause_max = np.inf, -np.inf
+        cause_mask_violations = 0
+        land_sum, land_n = 0.0, 0
+
+        for t0 in range(0, T, VALIDATE_TIME_CHUNK):
+            sl = slice(t0, min(t0 + VALIDATE_TIME_CHUNK, T))
+            X = ds["X"].isel(time=sl).values
+            nonfinite += int((~np.isfinite(X)).sum())
+
+            ign = ds["burn_next"].isel(time=sl).values
+            ign_vals |= set(np.unique(ign).tolist())
+
+            cause = ds["burn_next_cause"].isel(time=sl).values
+            cause_min = min(cause_min, float(cause.min()))
+            cause_max = max(cause_max, float(cause.max()))
+
+            vcm = ds["valid_cause_mask"].isel(time=sl).values.astype(bool)
+            cause_mask_violations += int(((cause >= 0) & (~vcm)).sum())
+
+            land = ds["land_mask"].isel(time=sl).values
+            land_sum += float(land.sum()); land_n += land.size
+
+        land_frac = land_sum / land_n
+        return {
+            "X_all_finite": (nonfinite == 0, f"{nonfinite} non-finite"),
+            "ign_binary": (ign_vals <= {0, 1}, f"values={sorted(ign_vals)}"),
+            "cause_range": (cause_min >= -1 and cause_max <= n_cause - 1,
+                            f"[{cause_min:.0f},{cause_max:.0f}] vs [-1,{n_cause-1}]"),
+            "cause_mask_superset": (cause_mask_violations == 0,
+                                    f"{cause_mask_violations} labelled-but-unmasked"),
+            "land_frac": (0.80 <= land_frac <= 0.99, f"{land_frac:.3f}"),
+        }
+
+
+def main():
     args = parser.parse_args()
 
     names = sorted(DATASET_CONFIGS) if args.dataset == "all" else [args.dataset]
     for name in names:
-        grid = FeatureGrid(get_dataset_config(name))
+        grid = FeatureGrid(get_dataset_config(name, args.fold))
         if args.stage == "all":
             grid.build()
+        elif args.stage == "extract":
+            grid.extract(args.sources)
+        elif args.stage == "validate":
+            grid.validate(args.splits)
         else:
             getattr(grid, args.stage)()
+
+
+if __name__ == "__main__":
+    main()

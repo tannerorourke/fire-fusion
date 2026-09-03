@@ -1,6 +1,5 @@
 # --- Core
-# Default PyPI wheel for torch 2.2.2 is CUDA 12.1 build, no extra index needed.
-# A different CUDA build installs over the top:
+# Default PyPI wheel for torch 2.2.2 is CUDA 12.1, no extra index needed. A different CUDA build installs over the top:
 #   pip install torch==2.2.2 --index-url https://download.pytorch.org/whl/cu118
 # Naming that index here instead would break uv, which resolves each package
 # from the first index that offers it and would take stale pins from it.
@@ -12,9 +11,8 @@ scikit-learn>=1.4
 tqdm>=4.66
 
 # --- Geospatial
-# These wheels bundle their own GDAL/PROJ/GEOS, so no system libraries are
-# needed. That bundled GDAL has no HDF4 driver, so MODIS HDF-EOS2 granules are
-# read through pyhdf instead and georeferenced from their own grid metadata.
+# These wheels bundle their own GDAL/PROJ/GEOS, no system libraries are needed.
+# Bundled GDAL has no HDF4 driver. MODIS HDF-EOS2 granules are read through pyhdf instead and georeferenced from their own grid metadata.
 rasterio>=1.4.3,<1.5
 pyhdf>=0.11
 rioxarray>=0.15,<0.16
@@ -33,6 +31,7 @@ netcdf4>=1.6
 h5netcdf>=1.3
 
 # --- Source ingest
+pyarrow>=15
 earthaccess>=0.11
 requests>=2.31
 s3fs>=2024.2

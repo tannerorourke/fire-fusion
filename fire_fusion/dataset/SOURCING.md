@@ -1,15 +1,16 @@
 # Sourcing
 
-Source of truth for how every raw product becomes a grid feature: native resolution and cadence, spatial resample, temporal alignment, QA masking, and the normalization chain that ships in the compiled splits. The README describes what the features are; this file describes how they are aggregated.
+Raw product native resolution and cadence, spatial resample, temporal alignment, QA masking, and normalization chain.
 
 Feature names, resampling modes, interpolation modes and normalization chains below are declared in `fire_fusion/config/feature_config.py` and executed by the processors under `fire_fusion/dataset/processors/`.
 
 ## Target grid
 
-- CRS `EPSG:32610` (UTM zone 10N), square cells at the dataset's configured resolution: 4000 m, 2000 m, 1000 m or 250 m.
+- CRS `EPSG:32610` (UTM zone 10N), square cells at the dataset's configured resolution: 4000 m, 2000 m, 1000 m or 500 m.
+- Every tier's west and north edges snap outward onto multiples of `LATTICE_M` = 4000 m, the least common multiple of the tier resolutions; a cell of any tier nests inside exactly one cell of every coarser tier. The grid runs from those edges to the smallest cell count covering the requested bounds: 103 x 109 at 4 km, 205 x 217 at 2 km, 410 x 433 at 1 km, 548 x 544 for `cascades500`. Encoder-stride alignment is the loader's concern; it trims the far edge.
 - Daily time step over 2003-01-01 to 2020-12-31. 2003 is the first fully clean season, since MCD15A2H starts mid-2002.
 - Seasonal datasets supervise months 5 to 10 and extract a 40-day lead / 10-day trail halo around each season. Halo days give the temporal recursions real history and are dropped before the splits are written, so they are never supervised.
-- Year splits: train 2003-2016, eval 2017-2018, test 2019-2020. Every statistical normalization is fit on the train years alone.
+- Year splits come from a named fold in `FOLDS`. `full` is train 2003-2016, eval 2017-2018, test 2019-2020, compiled at the dataset root. `fold1`, `fold2` and `fold3` are rolling-origin: each trains only on years before its test block, the three test blocks are disjoint, and calibration years are interleaved. Every statistical normalization is fit on the chosen fold's train years alone.
 
 ## Aggregation stages
 
@@ -71,24 +72,32 @@ Hourly to daily reduction happens at fetch time, before anything touches the mas
 
 RH is clipped to 0-100 and direction to 0-360 on load. Wind direction resamples and interpolates by nearest neighbour only: a raw angle blends through 180 degrees on a 359 to 1 wraparound under bilinear, so it is decomposed to sin/cos components before any smoothing happens. `rh_max` feeds the dead fuel moisture derivation and `wind_dir` the east/west and north/south components; both are dropped once consumed.
 
-## USFS fire layers
+## Fire occurrence and perimeter layers
 
-Vector occurrence points and perimeter polygons, national coverage from 1981. Both are read with geopandas, reprojected to the grid CRS, clipped to the master extent and rasterized directly onto the master grid with `all_touched=False`, so a cell is marked only when its centre falls inside the geometry. Neither takes any temporal interpolation; the rasterizer writes straight to master index positions.
+Ignition points come from FPA-FOD, the all-agency US wildfire occurrence record: one point per fire at its discovery location and date, carrying an NWCG general cause. Perimeter polygons come from the USFS national layer. Both are read with geopandas, reprojected to the grid CRS, clipped to the master extent and rasterized directly onto the master grid with `all_touched=False`, so a cell is marked only when its centre falls inside the geometry. Neither takes any temporal interpolation; the rasterizer writes straight to master index positions.
 
-- [Fire Occurrence Point Feature Layer](https://data-usfs.hub.arcgis.com/datasets/usfs%3A%3Anational-usfs-fire-occurrence-point-feature-layer/about)
+- Short, K.C., 2022. [Spatial wildfire occurrence data for the United States, 1992-2020, 6th edition](https://www.fs.usda.gov/rds/archive/Catalog/RDS-2013-0009.6). USDA Forest Service Research Data Archive, RDS-2013-0009.6.
 - [Fire Perimeter Feature Layer](https://data-usfs.hub.arcgis.com/datasets/usfs::national-usfs-fire-perimeter-feature-layer/about)
-- [LANDFIRE data dictionary (PDF)](https://www.landfire.gov/sites/default/files/documents/LF_Data_Dictionary.pdf)
+
+FPA-FOD ships as a national SQLite release around 1 GB. `python -m fire_fusion.dataset.processors.proc_ignitions` reduces it once to `data/raw/fpa_fod/fires.parquet`, a few columns over the Washington box, which then syncs like any other raw source. FPA-FOD covers every reporting agency: 23,749 fires in the box over 2003-2020, against 5,216 in the USFS occurrence layer. Some agencies report a location at the PLSS section centre, up to about 1 km from the true origin.
 
 | Feature | Source | Native | Aggregation | Norms |
 | --- | --- | --- | --- | --- |
-| `usfs_burn_occ` | occurrence points | vector, ~30 m positional | point burned into its cell on `DISCOVERYD` | consumed by labels, then dropped |
-| `usfs_burn_cause` | occurrence points | vector | one-hot `(time, burn_cause, y, x)` over 4 causes | consumed by labels, then dropped |
-| `usfs_perimeter` | perimeter polygons | vector | polygon burned into every day it is active | consumed by labels, then dropped |
-| `kde_natural_lightning`, `kde_human`, `kde_industrial`, `kde_debris` | occurrence points | Gaussian smoothing plus exponential decay, below | per_area, z |
+| `ign_occ` | FPA-FOD points | vector, point | point burned into its cell on `DISCOVERY_DATE`, every cause | consumed by labels, then dropped |
+| `ign_cause` | FPA-FOD points | vector | one-hot `(time, burn_cause, y, x)` over 4 causes, mapped causes only | consumed by labels, then dropped |
+| `perimeter_id` | perimeter polygons | vector | int32 fire id painted into every day the polygon is active | consumed by labels, then dropped |
+| `kde_natural_lightning`, `kde_human`, `kde_industrial`, `kde_debris` | FPA-FOD points | Gaussian smoothing plus exponential decay, below | per_area, z |
 
-**Occurrence and cause.** Rows without a parseable `DISCOVERYD`, outside the master date range, or whose `STATCAUSE` normalizes to unknown are dropped. `STATCAUSE` arrives as a bare numeric code, bare text, or a "code - text" combination, and is matched whole-token with the code tried first. The four retained classes are `NATURAL_LIGHTNING`, `HUMAN`, `INDUSTRIAL` and `DEBRIS`.
+**Occurrence and cause.** Rows without a parseable discovery date or outside the master date range are dropped. Everything else rasterizes into `ign_occ`; only fires whose `NWCG_GENERAL_CAUSE` maps to one of the four classes reach `ign_cause`. A fire whose cause is "missing data/not specified/undetermined" counts as an ignition and carries no cause plane.
 
-**Perimeter activity window.** A perimeter is active from `DISCOVERYD` through `PERIMETERD` inclusive. An end timestamp landing exactly on midnight is rolled back one day, since it denotes the end of the previous day. Both bounds are clamped to the master index, and end is raised to start where the record has them inverted.
+| Class | NWCG general causes |
+| --- | --- |
+| `NATURAL_LIGHTNING` | Natural |
+| `HUMAN` | Arson/incendiarism, Firearms and explosives use, Fireworks, Misuse of fire by a minor, Recreation and ceremony, Smoking, Other causes |
+| `INDUSTRIAL` | Equipment and vehicle use, Power generation/transmission/distribution, Railroad operations and maintenance |
+| `DEBRIS` | Debris and open burning |
+
+**Perimeter activity window.** A perimeter is active from `DISCOVERYD` through `PERIMETERD` inclusive, painted at its final extent for every one of those days, larger polygons first; a small fire inside a complex keeps its own id. An end timestamp landing exactly on midnight is rolled back one day, since it denotes the end of the previous day. Both bounds are clamped to the master index, and end is raised to start where the record has them inverted. Downstream, the layer paints the active state for polygons no satellite detected, and supplies a start-day burn event for such a polygon's cells when the polygon is at most 4 km² (one 2 km cell).
 
 **Ignition KDE.** Per cause, each day's occurrence raster is smoothed with a Gaussian of sigma = 20 km / cell size, then accumulated as an exponentially decayed running sum with a 365-day half-life:
 
@@ -161,7 +170,7 @@ Elevation is in metres and clipped to 0-5000. Slope is in degrees. Aspect is the
 
 ## MODIS (NASA LAADS)
 
-HDF-EOS2 granules over the five sinusoidal tiles covering the Pacific Northwest (`h08v04`, `h08v05`, `h09v04`, `h09v05`, `h10v04`), collection 061, day granules only. Granules are reprojected per-tile onto the master grid and combined across tiles for a given timestamp by max, which is exact given each tile contributes NaN outside its own footprint.
+HDF-EOS2 granules over the five sinusoidal tiles covering the Pacific Northwest (`h08v04`, `h08v05`, `h09v04`, `h09v05`, `h10v04`), collection 061, day granules only. Granules are reprojected per-tile onto the master grid and combined across tiles for a given timestamp by max, which is exact given each tile contributes NaN outside its own footprint. The MCD64A1 burn date combines by min, keeping the earliest burn day.
 
 - [earthaccess API](https://earthaccess.readthedocs.io/en/latest/) for search and download; requires an Earthdata token.
 - [NASA data explorer](https://ladsweb.modaps.eosdis.nasa.gov/search/order/1/MYD11A1--61,MCD15A2H--61)
@@ -171,9 +180,11 @@ HDF-EOS2 granules over the five sinusoidal tiles covering the Pacific Northwest 
 | `modis_lai` | MCD15A2H | 500 m, 8-day | nearest | nearest | clip(0, 10), z |
 | `modis_ndvi` | MOD13Q1 | 250 m, 16-day | nearest | forward fill | consumed, then dropped |
 | `modis_water_mask` | MOD13Q1 | 250 m, 16-day | nearest | forward fill | mask, no norm |
-| `modis_months_since_last_burn` | MCD64A1 | 500 m, monthly | nearest | forward fill | log1p, minmax |
+| `modis_burn` | MCD64A1 | 500 m, monthly | min | already daily | consumed by labels, then dropped |
+| `modis_burn_unc` | MCD64A1 | 500 m, monthly | max | already daily | consumed by labels, then dropped |
+| `days_since_last_burn` | MCD64A1 | 500 m, monthly | min | already daily | log1p, minmax |
 
-Every MODIS layer resamples nearest. These are quality-gated categorical or step-function quantities, and bilinear blending would invent values across a QA boundary or smooth out the sharp drop that a burn is supposed to produce.
+Every MODIS layer resamples nearest, apart from the MCD64A1 burn date and its uncertainty. These are quality-gated categorical or step-function quantities, and bilinear blending would invent values across a QA boundary or smooth out the sharp drop that a burn is supposed to produce. The burn date takes the minimum over its source pixels (earliest burn day) and the uncertainty the maximum (a burned pixel's value survives the unburned zeros around it).
 
 ### MCD15A2H leaf area index
 
@@ -201,11 +212,36 @@ Both layers forward-fill from 16-day composites to daily and hold the last compo
 
 ### MCD64A1 burned area
 
-[Product page](https://ladsweb.modaps.eosdis.nasa.gov/missions-and-measurements/products/MCD64A1) and [file spec](https://ladsweb.modaps.eosdis.nasa.gov/filespec/MODIS/6/MCD64A1). `Burn Date` gives a single first-burn day of year per cell per month, with 0 unburned, -1 unmapped and -2 water. A cell counts as burned that month where `QA` bits 0-1 are both set (land, valid) and `Burn Date` falls in 1-366.
+[Product page](https://ladsweb.modaps.eosdis.nasa.gov/missions-and-measurements/products/MCD64A1) and [file spec](https://ladsweb.modaps.eosdis.nasa.gov/filespec/MODIS/6/MCD64A1). `Burn Date` gives a single first-burn day of year per pixel per month, with 0 unburned, -1 unmapped and -2 water, and `Burn Date Uncertainty` gives that date's reported error in days. A pixel counts as burned where `QA` bits 0-1 are both set (land, valid) and `Burn Date` falls in 1-366.
 
-The monthly burn flag becomes a months-since-last-burn counter by a per-cell recursion over the *full* 2000-2020 monthly record, not just the extracted years, so the counter enters the window with real history. Cells with no burn anywhere in the record take the record length as a ceiling sentinel.
+The product resolves to a burn *day*. Each granule-month reduces to one master-grid burn date and one uncertainty; the sparse (day, cell) events on the master index become three daily layers:
 
-That ceiling is why this feature normalizes `log1p` then `minmax` rather than z-scoring. The sentinel sits on roughly 96% of cells and is not a duration; z-scoring against it throws recent burns past -10 sigma. Bounding the range keeps the recent months legible.
+- `modis_burn`: 1 on the cell's burn day.
+- `modis_burn_unc`: the reported uncertainty on that day, clipped to 0-100.
+- `days_since_last_burn` (int16): days since the cell's most recent burn at or before the day.
+
+The age walk is causal: a day sees only burns dated on or before itself. It runs over the *full* record from the November 2000 granules forward, not just the extracted years, so the counter enters the window with real history and winter burns outside the seasonal index still reset it. A cell with no burn yet carries the days since 2000-11-01, capped.
+
+That ceiling is why this feature normalizes `log1p` then `minmax` rather than z-scoring. The sentinel is not a duration; z-scoring against it throws recent burns past -10 sigma. Bounding the range keeps the recent days legible.
+
+`days_since_last_burn` is the only MCD64A1 channel the model sees. `modis_burn` and `modis_burn_unc` are label-side, feeding the burn-day fusion below, and are dropped at compile.
+
+## NASA FIRMS active fire
+
+MODIS Collection 6.1 active-fire detections: one point per detected fire pixel, with the along-scan pixel size that pixel was observed at. The archive arrives as yearly country CSVs under `data/raw/firms/modis_<year>_United_States.csv`.
+
+- [FIRMS archive download](https://firms.modaps.eosdis.nasa.gov/download/)
+- Columns read: `latitude`, `longitude`, `acq_date`, `confidence`, `scan`, `type`.
+
+| Feature | Native | Aggregation | Time | Norms |
+| --- | --- | --- | --- | --- |
+| `firms_detect` | ~1 km, daily | detection footprints rasterized per acquisition day | none | consumed by labels, then dropped |
+
+Rows are kept where `type` is 0, a presumed vegetation fire, against 1 to 3 for volcanoes, other static sources and offshore, and where `confidence` is at least 30. Each kept detection paints a circle of radius `scan * 500 m` around its reported centre, `scan` being the along-scan pixel width in km, 1.0 at nadir. A cell is set on the acquisition date when its centre falls inside a footprint.
+
+VIIRS is excluded: its record starts in 2012 and would put a step change in the label part-way through the record.
+
+The layer observes fire already burning and never feeds the model. It pins MCD64A1 burn days, contributes burn events where MCD64A1 saw nothing, and drives most of the active state.
 
 ## NLCD (MRLC)
 
@@ -219,10 +255,13 @@ Annual 30 m Collection 1 products, 2000-2020.
 | --- | --- | --- | --- | --- | --- |
 | `frac_imp_surface` | `Annual_NLCD_FctImp` | 30 m, annual 2000-2020 | bilinear | linear | clip(0, 1) |
 | `canopy_cover_pct` | `nlcd_tccconus` | 30 m, single vintage | bilinear | held constant | clip(0, 1) |
+| `cropland_frac` | `Annual_NLCD_LndCov` | 30 m, annual 2000-2020 | average | linear | clip(0, 1) |
 
-Both arrive as integer percent. Values above 100 (250 is the no-data code) are masked, the rest divided by 100 to a 0-1 fraction, and remaining gaps zero-filled. Both stay in that fraction and take no statistical normalization; they are already on a bounded, physically meaningful scale.
+The first two arrive as integer percent. Values above 100 (250 is the no-data code) are masked, the rest divided by 100 to a 0-1 fraction, and remaining gaps zero-filled. All three stay in that fraction and take no statistical normalization; they are already on a bounded, physically meaningful scale.
 
-**Land cover is not a feature.** The `Annual_NLCD_LndCov` class raster is in the archive and the processor retains a one-hot path for it, but the model uses fractional impervious surface and canopy cover in its place, and the water mask comes from MOD13Q1 rather than from class 11. The grouping the one-hot would use, kept for reference, is 250 no-data with 11 water, 12 snow, 21/22 developed low (under 49% impervious), 23/24 developed high (50% and above), 31 barren, 41/42/43 forest, 52/71 shrub and herbaceous, 81/82 farmland, 90/95 wetlands.
+**Cropland fraction.** The share of a cell in NLCD classes 81 (pasture/hay) and 82 (cultivated crops). The class raster is binarized at its native 30 m, then reprojected by average to an area fraction; no-data pixels stay NaN through the average, and the result is zero-filled and clipped to 0-1. It is a model channel and also gates the burn fusion: an MCD64A1 burn in a cell more than half cropland is agricultural residue burning and does not become a burn event.
+
+**Land cover is otherwise not a feature.** Beyond `cropland_frac`, the `Annual_NLCD_LndCov` class raster is unused: the processor retains a one-hot path for it, but the model uses fractional impervious surface and canopy cover in its place, and the water mask comes from MOD13Q1 rather than from class 11. The grouping the one-hot would use, kept for reference, is 250 no-data with 11 water, 12 snow, 21/22 developed low (under 49% impervious), 23/24 developed high (50% and above), 31 barren, 41/42/43 forest, 52/71 shrub and herbaceous, 81/82 farmland, 90/95 wetlands.
 
 The impervious *descriptor* layer (`Annual_NLCD_ImpDsc`: 0 non-urban, 1 roads, 2 urban, 250 no-data) is also unused. Road proximity comes from TIGER/Line vectors, which are exact rather than 30 m rasterized.
 
@@ -261,12 +300,13 @@ Computed at publish from features already on the grid, in the declared order, si
 
 | Feature | Inputs | Aggregation | Norms |
 | --- | --- | --- | --- |
+| `burns`, `burns_early`, `burns_late`, `burn_src`, `burned`, `active` | `ign_occ`, `modis_burn`, `modis_burn_unc`, `firms_detect`, `perimeter_id`, `cropland_frac` | burn-day fusion, see *Labels and masks* | none |
 | `precip_2d`, `precip_5d` | `precip_mm` | trailing 2-day and 5-day rolling sums | log1p, z |
 | `dead_fmo_100hr`, `dead_fmo_1000hr` | `temp_min`, `temp_max`, `rel_humidity`, `rh_max`, `precip_mm` | NFDRS 1978 dead fuel moisture recursions | z |
 | `lightning_load` | `lightning_strikes` | decayed running strike sum, 4-day half-life | log1p, z |
 | `fosberg_fwi` | `temp_avg`, `rel_humidity`, `wind_mph` | Fosberg Fire Weather Index | z |
 | `ndvi_anomaly` | `modis_ndvi` | NDVI minus its day-of-year climatology | clip(-1, 1), z |
-| `fire_spatial_roll` | `usfs_burn_occ`, `usfs_perimeter` | 3-day rolling max, then 3x3 spatial max | log1p, z |
+| `fire_spatial_roll` | `active` | 3-day rolling max, then 3x3 spatial max | log1p, z |
 | `wind_dir_ew`, `wind_dir_ns` | `wind_dir` | `-sin` and `-cos` of the bearing | none |
 | `lf_aspect_ew`, `lf_aspect_ns` | `lf_aspect` | `sin` and `cos` of the bearing | none |
 | `doy_sin` | time index | `sin(2 pi (doy - 1) / 365)` broadcast over the grid | none |
@@ -302,21 +342,52 @@ FFWI = eta sqrt(1 + U^2) / 0.3002
 
 **NDVI anomaly** subtracts a day-of-year climatology computed over the **train years only**, and is the one derivation recomputed at compile time for that reason. A climatology spanning the whole record would carry eval and test vegetation into every training sample and let each held-out day contribute to the mean it is measured against. Days the train split never observed, such as 29 February when no train year is a leap year, fall back to the nearest observed day of year.
 
-**Fire spatial rolling** answers "is anything burning near me, recently": a 3-day trailing max over the burning mask, then a 3x3 spatial max, so a cell sees its own and its neighbours' recent activity.
+**Fire spatial rolling** answers "is anything burning near me, recently": a 3-day trailing max over `active`, then a 3x3 spatial max, so a cell sees its own and its neighbours' recent activity. `active` carries only what a forecaster has on the day; this channel is causal.
 
-## Labels and masks
+## Fire state, labels and masks
 
-The ignition horizon is 7 days. One day leaves the positive class too sparse to supervise; a week still reads as a short-range forecast. A cell counts as burning at time `t` when either the occurrence raster or the perimeter raster is set.
+The horizon is 7 days. One day leaves the positive class too sparse to supervise; a week still reads as a short-range forecast. Everything in this section is built at publish from sparse `(day, cell)` event tables, not dense daily cubes; the 500 m tier fits in memory.
+
+### Burn-day fusion
+
+Five products are fused to one burn day per cell. Where they disagree on a cell-day the lowest code below wins; `burn_src` records which supplied it.
+
+| Code | Source | Day taken from |
+| --- | --- | --- |
+| 1 | `point` | an FPA-FOD discovery, the ignition itself |
+| 2 | `pinned` | an MCD64A1 burn day with a FIRMS detection inside that pixel's uncertainty window; the detection sets the day |
+| 3 | `mcd64` | an unpinned MCD64A1 day, carrying its pixel's uncertainty clipped to 1-7 days |
+| 4 | `firms` | a FIRMS detection where MCD64A1 saw nothing: the first day of a run of at least two consecutive detections, or a detection with a discovery point within 2 km in the last 3 days |
+| 5 | `polygon` | the start day of a USFS perimeter no satellite detected, when the polygon is at most one 2 km cell (4 km²) in area |
+
+MCD64A1 burns in cells with `cropland_frac` above 0.5 are agricultural residue burning and are dropped. A cell burns at most once per 30 days; a later day inside that window folds into `active`.
+
+### State layers
 
 | Name | Kind | Definition |
 | --- | --- | --- |
-| `ign_next` | label | 1 where the cell is clear at `t` and burning on any of `t+1 .. t+7` |
-| `ign_next_cause` | label | cause id of the earliest caused ignition in that window where `ign_next` is 1, else -1 |
-| `no_act_fire_mask` | mask | 1 where nothing is burning at `t` |
-| `valid_cause_mask` | mask | 1 where a valid cause lands anywhere in the forward window |
+| `burns` | mask | 1 on the cell's fused burn day |
+| `burns_early`, `burns_late` | - | the same events with unpinned MCD64A1 days shifted by minus and plus their uncertainty; consumed by the bracketing labels, then dropped |
+| `burn_src` | mask | the source code 1-5 that supplied the burn day, else 0 |
+| `active` | mask | 1 where a FIRMS detection or a discovery point landed in the cell on any of `t-3 .. t`, or an undetected small polygon spans `t` |
+| `burned` | mask | 1 where the cell burned earlier in the same calendar year by any non-point source |
+
+`active` and `burned` hold only what a forecaster has on the day; neither reads a retrospective layer. Both ship as masks for scoring and visualization and are never model inputs.
+
+### Labels and masks
+
+| Name | Kind | Definition |
+| --- | --- | --- |
+| `burn_next` | label | 1 where `no_act_fire_mask` is 1 at `t` and `burns` is 1 on any of `t+1 .. t+7` |
+| `burn_next_early`, `burn_next_late` | label | the same from `burns_early` and `burns_late`; scored beside the headline, never trained on |
+| `burn_next_cause` | label | cause id of the earliest burn event in that window where `burn_next` is 1, else -1 |
+| `no_act_fire_mask` | mask | 1 where the cell is neither active nor already burned this year |
+| `valid_cause_mask` | mask | 1 where `burn_next_cause` is 0 or above |
 | `land_mask` | mask | 1 where MODIS did not flag deep water |
 
-A cell already alight cannot be a fresh ignition, so the positive is gated on the cell being clear today and `no_act_fire_mask` withholds supervision everywhere else. The forward window is scanned nearest-first for the cause, so the closest caused ignition wins. Cause ids index `[NATURAL_LIGHTNING, HUMAN, INDUSTRIAL, DEBRIS]`. Anything MODIS does not flag as deep water, including cells it never observed, is treated as land.
+The target is burn arrival, not ignition alone: a cell scores positive whether a fire starts in it or spreads into it. A cell already alight or already burned cannot be where a fire next arrives, so the positive is gated on `no_act_fire_mask` and supervision is withheld everywhere else. `burn_next_early` and `burn_next_late` bracket the date error of unpinned MCD64A1 days.
+
+Each burn event takes the cause of the nearest discovery point within 20 km over the preceding 60 days, and -1 where no discovery is in reach; a `point` event finds its own discovery at distance zero. Cause ids index `[NATURAL_LIGHTNING, HUMAN, INDUSTRIAL, DEBRIS]`, folded to three at compile. Anything MODIS does not flag as deep water, including cells it never observed, is treated as land.
 
 ## File loaders
 

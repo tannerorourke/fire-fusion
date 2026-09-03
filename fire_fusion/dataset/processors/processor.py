@@ -1,3 +1,9 @@
+"""
+Subclass generalizing functions for feature extraction from a source.
+
+Includes a Callable(xr.Dataset) sink to push data through as it is built. Features 
+that expand into several large arrays can overload even high-RAM systems.
+"""
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -8,25 +14,17 @@ from xarray.core.types import InterpOptions
 from fire_fusion.config.feature_config import Feature
 
 class Processor:
-    """
-    Subclass that generalizes functions for extracting of features from a source
-    """
+    
     
     def __init__(self, cfg: List[Feature], gridref: xr.DataArray):
         self.cfg = cfg
         self.gridref = gridref
         self.mCRS = gridref.rio.crs
         self.transformer = self.gridref.rio.transform()
-
-        # Callable(xr.Dataset) set by the builder. Features that
-        # expand into several large arrays can push each one through the sink
-        # as soon as it is ready (and return an empty Dataset) instead of
-        # holding every part in memory at once.
         self.sink = None
 
     def build_feature(self, f_config: Feature) -> xr.Dataset:
-        """ - Read necessary files based on the feature key,
-            - route to corresponding functions to process
+        """ Read necessary files based on the feature key, and route to corresponding functions to process
         """
         raise NotImplementedError
 
@@ -140,7 +138,7 @@ class Processor:
         """ After feature has been concatenated over time into a dataset, broadcast 
             over master time for data which is missing days
             - If data has no 'time' dimension:
-                Add dimension, broadcast over master time index
+                add dimension, broadcast over master time index
             - If data has 'time' of size == 1:
                 broadcast over master time index
             - If data has EXISTING time indices

@@ -16,7 +16,7 @@ class CensusRoads(Processor):
         super().__init__(cfg, master_grid)
     
     def build_feature(self, f_config: Feature):
-        # load roads, reproject, clip
+        # -- load roads, reproject, clip
         road_paths = [
             CROADS_DIR / "tl_2012_WA_53_prisecroads.shp",
             CROADS_DIR / "tl_2012_ID_16_prisecroads.shp",
@@ -29,7 +29,7 @@ class CensusRoads(Processor):
         
         print(f"Informing tensors to stop whining.. MORE DATA!")
 
-        # TIGER/Line ships in NAD83 degrees; clip bounds are in grid (UTM meter) space
+        # -- TIGER/Line ships in NAD83 degrees; clip bounds are in grid (UTM meter) space
         roads = roads.to_crs(self.mCRS)
 
         roads = gpd.clip(roads, box(
@@ -37,7 +37,7 @@ class CensusRoads(Processor):
             self.gridref.attrs['x_max'], self.gridref.attrs['y_max']
         ))
 
-        # Rasterize 1 where there is a road
+        # -- Rasterize 1 where there is a road
         mgrid_ht, mgrid_wt = self.gridref.attrs['template'].shape
 
         road_raster = rfeatures.rasterize(
@@ -48,23 +48,18 @@ class CensusRoads(Processor):
             dtype="uint8"
         )
 
-        # Compute Euclidean distance (in pixels) to the nearest road
-        # distance_transform_edt does distance from 'True' pixels;
-        # we want distance FROM roads, so flip the sign
+        # -- Compute Euclidean distance (in pixels) to the nearest road
+        # `distance_transform_edt` does distance from 'True' pixels; we want distance FROM roads. flip the sign
         d_to_road_px = distance_transform_edt(road_raster == 0)
         if isinstance(d_to_road_px, tuple | None):
             raise ValueError("[CROADS] Calling this func wrong")
         
-        
+        # -- Construct an xarray.DataArray aligned with the master grid
         dist_to_road_m = d_to_road_px * self._get_px_size_m()
-
-        # Save distance raster
         dist_3d_m = np.broadcast_to(
             array = dist_to_road_m.astype("float32"),
             shape = (self.gridref.sizes.get("time", 1), mgrid_ht, mgrid_wt),
         )
-
-        # Construct an xarray.DataArray aligned with the master grid
         dist_da = xr.DataArray(
             dist_3d_m,
             dims=self.gridref.dims,
@@ -72,7 +67,7 @@ class CensusRoads(Processor):
             name=f_config.name or "d_to_road",
         )
 
-        # write the crs reference and transform to rioxarray engine, return with it
+        # -- write the crs reference and transform to rioxarray engine, return with it
         dist_da = dist_da.rio.write_crs(self.mCRS)
         dist_da = dist_da.rio.write_transform(self.transformer)
 

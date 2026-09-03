@@ -123,7 +123,7 @@ class UsdaWui(Processor):
     def build_feature(self, f_config: Feature):
         fp = USDA_DIR / "CONUS_WUI_block_1990_2020_change_v4.gdb"
 
-        # Load and save on the first feature, so we can skip for the next
+        # Load and save on the first feature
         if self.geo_block is None:
             geo_block = self._load_geo_block(fp)
             self.geo_block = self._reindex_drop_cols(geo_block)

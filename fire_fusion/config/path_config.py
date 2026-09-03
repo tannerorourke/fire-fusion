@@ -15,9 +15,11 @@ NLCD_DIR        = RAW_DATA_DIR / "nlcd"
 GPW_DIR         = RAW_DATA_DIR / "nasa_gpw"
 CROADS_DIR      = RAW_DATA_DIR / "census"
 USFS_DIR        = RAW_DATA_DIR / "usfs"
+FPA_FOD_DIR     = RAW_DATA_DIR / "fpa_fod"
 PRISM_DIR       = RAW_DATA_DIR / "prism"
 AORC_DIR        = RAW_DATA_DIR / "aorc"
 MODIS_DIR       = RAW_DATA_DIR / "modis"
+FIRMS_DIR       = RAW_DATA_DIR / "firms"
 USDA_DIR        = RAW_DATA_DIR / "usda.gdb"
 NCEI_SWDI_DIR   = RAW_DATA_DIR / "ncei_swdi"
 
@@ -25,12 +27,15 @@ MODEL_DIR = FF_ROOT / "model"
 MODEL_SAVE_DIR = MODEL_DIR / "saved"
 PLOTS_DIR = FF_ROOT / "analysis" / "plots"
 
-# TensorBoard run logs
-RUNS_DIR = Path(os.environ.get("FF_RUNS_DIR", str(PROJECT_ROOT / "runs")))
+# Everything a run produces. The output tier sits beside the repo, relocatable
+# through FF_ARTIFACTS_DIR.
+ARTIFACTS_DIR = Path(os.environ.get("FF_ARTIFACTS_DIR", str(PROJECT_ROOT.parent / "artifacts")))
 
-# Extracted per-day prediction fields and scored analysis reports
-PRED_DIR = Path(os.environ.get("FF_PRED_DIR", str(PROJECT_ROOT / "predictions")))
-REPORTS_DIR = Path(os.environ.get("FF_REPORTS_DIR", str(PROJECT_ROOT / "reports")))
-
+RUNS_DIR    = Path(os.environ.get("FF_RUNS_DIR",    str(ARTIFACTS_DIR / "runs")))
+PRED_DIR    = Path(os.environ.get("FF_PRED_DIR",    str(ARTIFACTS_DIR / "predictions")))
+REPORTS_DIR = Path(os.environ.get("FF_REPORTS_DIR", str(ARTIFACTS_DIR / "reports")))
+REF_DIR     = Path(os.environ.get("FF_REF_DIR",     str(ARTIFACTS_DIR / "references")))
+RATE_DIR    = Path(os.environ.get("FF_RATE_DIR",    str(ARTIFACTS_DIR / "rate")))
+VIEWER_DIR  = Path(os.environ.get("FF_VIEWER_DIR",  str(ARTIFACTS_DIR / "viewer")))
 
 

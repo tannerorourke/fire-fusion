@@ -1,8 +1,6 @@
 """
 Backblaze B2 transit for raw source data and run artifacts.
-
-Processed transfers are selected by build step, not by directory, so a training
-node pulls the splits without dragging the staging and published cubes with them.
+Processed transfers selected by build step.
 """
 
 import argparse
@@ -14,31 +12,44 @@ from typing import Dict, Iterable, List, Optional, Tuple
 from ..config.dataset_config import DATASET_CONFIGS
 from ..config.path_config import (
     RAW_DATA_DIR, PROCESSED_DATA_DIR, LANDFIRE_DIR, NLCD_DIR, GPW_DIR, CROADS_DIR,
-    USFS_DIR, PRISM_DIR, AORC_DIR, MODIS_DIR, USDA_DIR, NCEI_SWDI_DIR,
+    USFS_DIR, FPA_FOD_DIR, PRISM_DIR, AORC_DIR, MODIS_DIR, FIRMS_DIR, USDA_DIR, NCEI_SWDI_DIR,
 )
 
+
+# -- Config ------------------------------------------------------------------
 # B2 key namespaces. Local layout round-trips to the same paths: raw sources under
 # data/raw/<source>, built cubes under data/processed/<dataset>, runs under runs/.
 RAW_PREFIX = "raw"
 PROCESSED_PREFIX = "processed"
 
-# Source name -> local directory. The name doubles as the B2 key segment, and each
-# dir sits directly under RAW_DATA_DIR, so a push/pull round-trips to the same path.
+# Source name -> local directory. Doubles as the B2 key segment.
 RAW_SOURCES: Dict[str, Path] = {
     p.name: p for p in [
-        LANDFIRE_DIR, NLCD_DIR, GPW_DIR, CROADS_DIR, USFS_DIR,
-        PRISM_DIR, AORC_DIR, MODIS_DIR, USDA_DIR, NCEI_SWDI_DIR,
+        LANDFIRE_DIR, NLCD_DIR, GPW_DIR, CROADS_DIR, USFS_DIR, FPA_FOD_DIR,
+        PRISM_DIR, AORC_DIR, MODIS_DIR, FIRMS_DIR, USDA_DIR, NCEI_SWDI_DIR,
     ]
 }
 
-# One build step writes each of these and a consumer wants exactly one: a training
-# node needs the splits, a release needs the published cube. Naming members
-# explicitly also keeps stray directories out of a push.
 PROCESSED_STEPS: Dict[str, Tuple[str, ...]] = {
     "staging": ("cube.zarr",),
     "published": ("dataset.zarr", "dataset_manifest.json"),
     "splits": ("train.zarr", "eval.zarr", "test.zarr", "manifest.json"),
 }
+
+# -- CLI ---------------------------------------------------------------------
+parser = argparse.ArgumentParser(description="Sync source data and built cubes between local disk and B2.")
+parser.add_argument("action", choices=["push", "pull"])
+parser.add_argument("--kind", choices=["raw", "processed"], default="raw",
+                help="raw sources (data/raw) or built cubes (data/processed)")
+parser.add_argument("--sources", nargs="+", choices=sorted(RAW_SOURCES), default=None,
+                help="raw only: subset of sources; default all")
+parser.add_argument("--datasets", nargs="+", choices=sorted(DATASET_CONFIGS), default=None,
+                help="processed only: dataset names; push defaults to all built locally")
+parser.add_argument("--step", nargs="+", choices=sorted(PROCESSED_STEPS), default=["splits"],
+                help="processed only: which build steps' outputs to move")
+parser.add_argument("--fold", default="full",
+                help="processed only: which fold's split stores to move")
+parser.add_argument("--overwrite", action="store_true")
 
 
 class B2Store:
@@ -55,7 +66,7 @@ class B2Store:
         region = m.group(1) if m else os.environ.get("B2_REGION", "us-east-005")
 
         # -- B2 throttles bursty multi-GB transfers; standard-mode retries absorb
-        #    the resulting SlowDown and connection-reset errors instead of dying
+        #    the SlowDown and connection-reset errors
         self.client = boto3.client(
             "s3",
             endpoint_url=endpoint,
@@ -117,7 +128,7 @@ def _processed_datasets(names: Optional[Iterable[str]]) -> List[str]:
     if names:
         return list(names)
     # push with no explicit list -> every built cube on local disk; a pull needs
-    # explicit names since the local processed dir may not exist yet on a fresh node
+    # explicit names (the local processed dir may not exist on a fresh node)
     if not PROCESSED_DATA_DIR.exists():
         return []
     return sorted(p.name for p in PROCESSED_DATA_DIR.iterdir() if p.is_dir())
@@ -129,12 +140,14 @@ def _step_members(steps: Iterable[str]) -> List[str]:
 
 
 def _sync_processed(
-    store: "B2Store", action: str, ds: str, 
-    members: Iterable[str], overwrite: bool
+    store: "B2Store", action: str, ds: str,
+    members: Iterable[str], overwrite: bool, fold: str = "full",
 ) -> None:
+    # -- split stores of a non-default fold live one directory down, on both sides
     for member in members:
-        local = PROCESSED_DATA_DIR / ds / member
-        key = f"{PROCESSED_PREFIX}/{ds}/{member}"
+        sub = fold if fold != "full" and member in PROCESSED_STEPS["splits"] else None
+        local = PROCESSED_DATA_DIR / ds / sub / member if sub else PROCESSED_DATA_DIR / ds / member
+        key = f"{PROCESSED_PREFIX}/{ds}/{sub}/{member}" if sub else f"{PROCESSED_PREFIX}/{ds}/{member}"
         if action == "push":
             if local.is_dir():
                 store.put_tree(local, key, overwrite)
@@ -149,18 +162,7 @@ def _sync_processed(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Sync source data and built cubes between local disk and B2.")
-    ap.add_argument("action", choices=["push", "pull"])
-    ap.add_argument("--kind", choices=["raw", "processed"], default="raw",
-                    help="raw sources (data/raw) or built cubes (data/processed)")
-    ap.add_argument("--sources", nargs="+", choices=sorted(RAW_SOURCES), default=None,
-                    help="raw only: subset of sources; default all")
-    ap.add_argument("--datasets", nargs="+", choices=sorted(DATASET_CONFIGS), default=None,
-                    help="processed only: dataset names; push defaults to all built locally")
-    ap.add_argument("--step", nargs="+", choices=sorted(PROCESSED_STEPS), default=["splits"],
-                    help="processed only: which build steps' outputs to move")
-    ap.add_argument("--overwrite", action="store_true")
-    args = ap.parse_args()
+    args = parser.parse_args()
 
     store = B2Store()
     if args.kind == "raw":
@@ -173,7 +175,7 @@ def main() -> None:
     else:
         members = _step_members(args.step)
         for ds in _processed_datasets(args.datasets):
-            _sync_processed(store, args.action, ds, members, args.overwrite)
+            _sync_processed(store, args.action, ds, members, args.overwrite, args.fold)
 
 
 if __name__ == "__main__":

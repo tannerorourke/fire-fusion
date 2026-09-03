@@ -6,9 +6,9 @@ Processor (import):
 - Preclips, reprojects and clips to the extent of the master grid.
 
 Fetch (running):
-- PRISM serves as one zipped contcontinental COG per-var per day, so days pulled
-  paced under two per second with backoff, clipped to the Washington extent, and
-  stacked into one NetCDF per variable-year.
+- PRISM serves as one zipped contcontinental COG per-var per day. Pull two 
+days per second with backoff, clipped to the Washington extent, and stacked into 
+one NetCDF per variable-year.
 
   python -m fire_fusion.dataset.processors.proc_prism --years 2000 2020
 """
@@ -82,7 +82,7 @@ PRISM_VARS = ["ppt", "tmean", "tmin", "tmax", "tdmean", "vpdmin", "vpdmax"]
 URL = "https://services.nacse.org/prism/data/get/us/800m/{var}/{date}"
 HEADERS = {"User-Agent": "firefusion-ingest"}
 
-# Washington extent with a margin so master edge cells fall inside the clip.
+# Washington extent with a margin.
 LON_MIN, LON_MAX = -125.0, -116.5
 LAT_MIN, LAT_MAX = 45.5, 49.5
 
@@ -95,8 +95,8 @@ class PrismDailyCap(Exception):
 
 
 def _fetch_day(var: str, date: str) -> xr.DataArray:
-    # NACSE serves over-quota and transient failures as a 200 with a text body,
-    # so validate zip magic before parsing: the cap is fatal, other bodies retry.
+    # -- NACSE serves over-quota and transient failures as a 200 with a text body,
+    #    Validate zip before parsing
     url = URL.format(var=var, date=date)
     err = None
     for attempt in range(MAX_RETRIES):

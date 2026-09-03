@@ -32,8 +32,7 @@ dependencies = [
     "tensorboard",
 ]
 
-# Version bounds live in requirements.txt, which is the install surface for both
-# local and cloud. The bounds here stay loose so the two never contradict.
+# Version bounds in requirements.txt
 
 [build-system]
 requires = ["setuptools>=68"]

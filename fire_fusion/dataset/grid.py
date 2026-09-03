@@ -5,6 +5,15 @@ import xarray as xr, rioxarray
 from pyproj import CRS, Transformer
 
 
+# -- Config ------------------------------------------------------------------
+# -- UTM Zone 10N
+GRID_CRS = "EPSG:32610"  
+
+# -- The least common multiple of the tier resolutions.
+LATTICE_M = 4000.0
+
+
+# -- Utility functions ------------------------------------------------------
 def season_time_index(
     start_date: str,
     end_date: str,
@@ -13,12 +22,11 @@ def season_time_index(
     halo_trail_days: int = 10,
 ) -> pd.DatetimeIndex:
     """
-    Days to extract. With season_months set, one block per year covering the
-    season plus a halo either side; without it, every day between the bounds.
-
-    The halo lets temporal derivations enter the supervised window with real
-    history behind them instead of restarting at zero. It is dropped before the
-    splits are written, so halo days are never supervised.
+    Days to extract. With season_months set, one block per year covering the season plus a
+    halo either side.
+    
+    The halo gives temporal derivations real history behind the supervised window.
+    Dropped before splits are written.
     """
     full = pd.date_range(start_date, end_date, freq="D")
     if season_months is None:
@@ -31,7 +39,7 @@ def season_time_index(
     keep = pd.DatetimeIndex([])
     for year in sorted(full.year.unique()):
         block_start = pd.Timestamp(year=year, month=m0, day=1) - lead
-        # month end without calendar arithmetic: first of the next month, minus a day
+        # -- first of the next month, minus a day
         month_end = pd.Timestamp(year=year + (m1 // 12), month=(m1 % 12) + 1, day=1)
         block_end = month_end - pd.Timedelta(days=1) + trail
         keep = keep.union(full[(full >= block_start) & (full <= block_end)])
@@ -39,16 +47,16 @@ def season_time_index(
     return keep
 
 
-# -- which days of an extraction index carry supervision, i.e. are not halo
+# --------------------------------------------------------------------------
 def supervised_mask(time_index, season_months) -> np.ndarray:
+    """
+    which days of an extraction index are not halo
+    """
     if season_months is None:
         return np.ones(len(time_index), dtype=bool)
     m0, m1 = season_months
     months = np.asarray(pd.DatetimeIndex(time_index).month)
     return (months >= m0) & (months <= m1)
-
-
-GRID_CRS = "EPSG:32610"  # -- UTM Zone 10N, least distorted single zone over WA
 
 
 def create_coordinate_grid(
@@ -59,8 +67,7 @@ def create_coordinate_grid(
     crs = GRID_CRS
 ) -> xr.DataArray:
     """
-    Defines coordinate grid to place features on top of
-    - subclasses xarray.DataArray
+    Defines coordinate grid to place features on top of. Subclasses xarray.DataArray
     """
     min_lat, max_lat = min(lat_bounds), max(lat_bounds)
     min_lon, max_lon = min(lon_bounds), max(lon_bounds)
@@ -74,27 +81,21 @@ def create_coordinate_grid(
         crs_to=crs_obj, 
         always_xy=True
     )
-    # UTM edges bow with latitude; take the envelope of all four corners so the
-    # grid fully covers the requested lat/lon rectangle
     corner_xs, corner_ys = transformer.transform(
         [min_lon, max_lon, min_lon, max_lon],
         [min_lat, min_lat, max_lat, max_lat],
     )
     min_x, max_x = min(corner_xs), max(corner_xs)
     min_y, max_y = min(corner_ys), max(corner_ys)
+    assert LATTICE_M % resolution == 0, f"{resolution} m does not divide the {LATTICE_M} m lattice"
 
-    width_m = max_x - min_x
-    height_m = max_y - min_y
-
-    # -- the smallest grid covering the requested bounds. Rounding up to suit an
-    # -- encoder stride would append cells outside those bounds; alignment is the
-    # -- loader's concern and it trims rather than invents.
-    npx_x = int(np.ceil(width_m / resolution))
-    npx_y = int(np.ceil(height_m / resolution))
-
-    # Snap upper-right corner to exact pixel grid
+    # -- Grid snaps to the W/N edges of the lattic, then covers the bounds with the smallest number
+    #    of cells needed to cover the bounds.
+    min_x = np.floor(min_x / LATTICE_M) * LATTICE_M
+    max_y_aligned = np.ceil(max_y / LATTICE_M) * LATTICE_M
+    npx_x = int(np.ceil((max_x - min_x) / resolution))
+    npx_y = int(np.ceil((max_y_aligned - min_y) / resolution))
     max_x_aligned = min_x + npx_x * resolution
-    max_y_aligned = min_y + npx_y * resolution
 
     transform = from_origin(
         min_x,              # west (left)
