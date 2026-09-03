@@ -3,7 +3,7 @@ Profile a few training steps of an experiment and print where the time goes.
 
     python scripts/profile_batch.py --experiment wa2000-s1 [--steps 4]
 
-Builds the trainer exactly as fire_fusion.train does, then swaps the training
+Builds the trainer exactly as fire_fusion.training.train does, then swaps the training
 loop for a short torch.profiler run: a per-op table sorted by CUDA time, plus
 a chrome trace under logs/ for chrome://tracing.
 """
@@ -18,14 +18,17 @@ from torch.amp.autocast_mode import autocast
 from torch.profiler import ProfilerActivity, profile, schedule
 
 from fire_fusion.config.path_config import MODEL_DIR
-from fire_fusion.train import WRMTrainer
-from fire_fusion.train_utils import get_device_config
+from fire_fusion.training.train import WRMTrainer
+from fire_fusion.training.utils import get_device_config
 
 
 class ProfilingTrainer(WRMTrainer):
     steps = 4
 
     def train(self):
+        """ Run a few training steps under torch.profiler, printing a per-op CUDA
+            time table and exporting a chrome trace to logs/.
+        """
         self.model.train()
         self.optimizer = optim.AdamW(
             filter(lambda p: p.requires_grad, self.model.parameters()),
@@ -68,6 +71,9 @@ class ProfilingTrainer(WRMTrainer):
 
 
 def main():
+    """ Parse args, build a ProfilingTrainer for the named experiment, and let
+        construction run the profiled training steps.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--experiment", required=True)
     ap.add_argument("--steps", type=int, default=4,

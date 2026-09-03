@@ -27,7 +27,7 @@ class FireFusionModel(nn.Module):
         - Run self-attention over time
         - Decode (upsample) into a (B, 1, H, W) grid
 
-    Modality dropout trains the model to stand on any subset of its inputs, so a
+    Modality dropout trains the model on random subsets of its input groups; a
     product outage at inference degrades the prediction instead of voiding it.
     """
     def __init__(self, dyn_channels: int, static_channels: int, mp: Dict):
@@ -79,9 +79,8 @@ class FireFusionModel(nn.Module):
     def set_frozen(self, freeze_main: bool = False, freeze_heads: bool = False):
         """ Toggle gradient flow for the backbone and decoder groups.
 
-            - a frozen group also switches to eval, so dropout stays fixed while
-              the other group trains; otherwise the representation a head specializes
-              against would still be stochastically perturbed each step
+            - a frozen group also switches to eval; dropout stays fixed while
+              the other group trains
         """
         self._frozen_main = freeze_main
         self._frozen_heads = freeze_heads
@@ -93,11 +92,12 @@ class FireFusionModel(nn.Module):
             for p in module.parameters():
                 p.requires_grad = not freeze_heads
 
-        # re-assert train/eval so a freeze applied mid-run takes effect at once
+        # re-assert train/eval; a freeze applied mid-run takes effect at once
         self.train(self.training)
         return self
 
     def train(self, mode: bool = True):
+        """ Set train/eval mode, keeping any frozen backbone or decoder group in eval. """
         super().train(mode)
         if self._frozen_main:
             for module in self._main_modules:
@@ -108,6 +108,9 @@ class FireFusionModel(nn.Module):
         return self
 
     def _drop_masks(self, B: int, device: torch.device):
+        """ Sample a per-group drop mask and a per-sample keep mask for modality dropout,
+            or (None, None) outside training or when `modality_dropout` is 0.
+        """
         p = self.modality_dropout
         if not (self.training and p > 0):
             return None, None
@@ -116,9 +119,12 @@ class FireFusionModel(nn.Module):
         return drop, keep
 
     def forward(self, x_dyn: torch.Tensor, x_static: torch.Tensor):
+        """ (B, T, C_dyn, H, W) dynamic input plus (B, C_static, H, W) static maps -> (B, 1, H, W)
+            ignition logits and (B, n_cause_classes, H, W) cause logits.
+        """
         drop, keep = self._drop_masks(x_dyn.shape[0], x_dyn.device)
 
-        # -- the date plane is spatially constant, so the mean recovers it exactly
+        # -- the date plane is spatially constant; the mean recovers it exactly
         doy = x_static[:, -1].mean(dim=(-2, -1))
         film = self.static_branch(x_static[:, :-1], doy, keep=keep)
 

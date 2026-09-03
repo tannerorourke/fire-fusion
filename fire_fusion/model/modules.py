@@ -3,9 +3,8 @@ Spatiotemporal ConvFormer building blocks:
 Per-group spatial encoder, Static FiLM branch that conditions it, 
 spatial/channel/temporal attention blocks, and the two-headed decoder.
 
-The dynamic path sees one stem per modality group so a missing group is a learned
-token rather than an unrecoverable zero, and the static path enters as FiLM at
-every encoder resolution instead of as extra channels repeated across time.
+The dynamic path has one stem per modality group; a missing group is a learned
+token. The static path enters as FiLM at every encoder resolution.
 """
 import math
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -17,14 +16,17 @@ from torch.utils.checkpoint import checkpoint
 
 
 def group_norm(channels: int, max_groups: int = 32) -> nn.GroupNorm:
-    # -- GroupNorm keeps no running statistics, so crops drawn from one part of the
-    #    domain cannot bake that region's mean into full-domain inference. Sized to
-    #    the largest group count dividing `channels`.
+    """ Return a GroupNorm sized to the largest group count dividing `channels`;
+        it carries no running statistics.
+    """
     return nn.GroupNorm(math.gcd(channels, max_groups), channels)
 
 
 class ConvResidualBlock(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, kernel_size = 3, stride = 1, padding = 1, dropout = 0.0):
+        """ Build a two-conv residual block with GroupNorm, projecting the identity
+            when the residual and trunk shapes disagree.
+        """
         super().__init__()
         if out_ch is None:
             out_ch = in_ch
@@ -35,8 +37,7 @@ class ConvResidualBlock(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
         self.relu = nn.ReLU(inplace=True)
 
-        # only projected when the residual and trunk shapes disagree; an
-        # unconditional branch would carry parameters that never see a gradient
+        # only projected when the residual and trunk shapes disagree
         self.downsample = (
             nn.Sequential(
                 nn.Conv2d(in_ch, out_ch, kernel_size=1, stride=stride, bias=False),
@@ -47,6 +48,9 @@ class ConvResidualBlock(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """ (N, in_ch, H, W) -> (N, out_ch, H', W')
+            two convolutions w/GroupNorm + residual, downsampling by `stride`.
+        """
         identity = x
         out = self.norm1(self.conv1(x))
         out = self.relu(out)
@@ -79,16 +83,17 @@ class SpatialEncoder(nn.Module):
 
     Shape: (B, T, C_dyn, H, W) --> (B, T, embed_dim, H', W')
 
-    `dyn_groups`: modality group -> channel indices. One stem per group keeps a
-                  group's absence expressible as a learned token; a shared stem
-                  would only offer zeros, which are a legal normalized value.
+    `dyn_groups`: modality group -> channel indices. One stem per group; a
+                  group's absence is a learned token (zeros are a legal
+                  normalized value).
 
     `depth`: num of stride-2 stages, each doubling RF (in grid cells)
              A dataset at 1/2 ground resolution needs one more stage to reach
-             the same distance in kilometres. Holding that distance fixed is what
-             makes results comparable across resolutions.
+             the same distance in kilometres. Results are compared at a fixed
+             distance across resolutions.
     """
     def __init__(self, dyn_channels, embed_dim, dyn_groups: Dict[str, List[int]], depth: int = 1):
+        """ Build per-group stems, missing-group tokens, and the stride-2 encoder stages. """
         super().__init__()
 
         self.base_ch            = 64
@@ -101,8 +106,8 @@ class SpatialEncoder(nn.Module):
         assert sum(len(i) for i in self.group_idx.values()) == dyn_channels, \
             "SpatialEncoder: dyn_groups must cover every dynamic channel exactly once"
 
-        # -- remainders spread over the leading groups so the concatenation is
-        #    exactly base_ch wide whatever the group count
+        # -- remainders spread over the leading groups; the concatenation is
+        #    exactly base_ch wide for any group count
         n = len(self.group_names)
         widths = {g: self.base_ch // n + (i < self.base_ch % n) for i, g in enumerate(self.group_names)}
 
@@ -147,16 +152,19 @@ class SpatialEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor, film: Optional[FilmLevels] = None,
                 drop: Optional[Dict[str, torch.Tensor]] = None):
+        """ (B, T, C_dyn, H, W) -> (B, T, embed_dim, H', W'), plus the per-resolution
+            feature maps for the final day as skip connections.
+        """
         B, T, C, H, W = x.shape
 
-        # -- every day is encoded independently, so T rides along in the batch axis
+        # -- every day is encoded independently; T rides along in the batch axis
         out = self._stem(x.reshape(B*T, C, H, W), B, T, drop)
         out = self.down1(out)
         if film is not None:
             out = apply_film(out, film[0], T)
 
         # -- the resolution entering each stage, kept for the decoder to fuse; only
-        # -- the predicted day is retained, since that is all the decoder consumes
+        # -- the predicted day is retained (all the decoder consumes)
         skips = [out.view(B, T, *out.shape[1:])[:, -1]]
         for i, stage in enumerate(self.stages):
             out = stage(out)
@@ -176,20 +184,22 @@ class StaticFiLMBranch(nn.Module):
     Input:  static maps (B, C_s, H, W) and a day-of-year scalar (B,)
     Output: [(gamma, beta)] per encoder level, full resolution first
 
-    Terrain does not change across a look-back window, so carrying it through the
-    temporal path spends T copies of a constant. Modulating the dynamic features
-    instead keeps the interaction (a wind on a steep south slope) and drops the
-    duplication. Heads are zero-initialized, so conditioning starts at identity
-    and the branch only gains influence as gradient arrives.
+    Terrain does not change across a look-back window; the temporal path would
+    carry T copies of a constant. FiLM modulation of the dynamic features keeps
+    the interaction (a wind on a steep south slope) without the duplication.
+    Heads are zero-initialized: conditioning starts at identity and the branch
+    gains influence as gradient arrives.
     """
     def __init__(self, static_channels: int, base_ch: int, embed_dim: int, depth: int, width: int = 32):
+        """ Build the trunk, stride-2 downsampling levels, and zero-initialized
+            per-level FiLM heads. """
         super().__init__()
         self.trunk = nn.Sequential(
             nn.Conv2d(static_channels, width, kernel_size=3, padding=1, bias=False),
             group_norm(width),
             nn.GELU(),
         )
-        # -- mirrors the encoder's stride-2 stages so every level lands on the
+        # -- mirrors the encoder's stride-2 stages; every level lands on the
         #    same extent as the map it modulates, odd sizes included
         self.downs = nn.ModuleList([
             nn.Sequential(
@@ -201,7 +211,7 @@ class StaticFiLMBranch(nn.Module):
         ])
 
         level_ch = [base_ch] + [embed_dim] * depth
-        # -- the date enters as a channel, so seasonality can reweight the same map
+        # -- the date enters as a channel; seasonality reweights the same map
         self.heads = nn.ModuleList([nn.Conv2d(width + 1, 2 * c, kernel_size=1) for c in level_ch])
         for head in self.heads:
             nn.init.zeros_(head.weight)
@@ -209,6 +219,9 @@ class StaticFiLMBranch(nn.Module):
 
     def forward(self, static: torch.Tensor, doy: torch.Tensor,
                 keep: Optional[torch.Tensor] = None) -> List[Tuple[torch.Tensor, torch.Tensor]]:
+        """ (B, C_s, H, W) static maps and (B,) day-of-year -> per-level (gamma, beta) FiLM
+            pairs, zeroed by `keep` for a sample whose static input dropped.
+        """
         f = self.trunk(static)
         levels = [f]
         for down in self.downs:
@@ -233,16 +246,15 @@ class WindowedSpatialAttention(nn.Module):
 
     Shape:  (B, T, C, H', W') --> (B, T, C, H', W') (no change)
     
-    Tokens within a window carry a learned position: attention is permutation
-    equivariant, so without one the block cannot tell upslope from downslope
-    within its window, only that both are present.
+    Tokens within a window carry a learned position. Attention is permutation
+    equivariant; without one the block cannot tell upslope from downslope
+    within its window.
 
-    The feature map is padded up to a whole number of windows and cropped after,
-    so window_size is a free hyperparameter rather than a divisor the grid has to
-    satisfy. 
-    Padded tokens masked out.
+    The feature map is padded up to a whole number of windows and cropped after;
+    window_size need not divide the grid. Padded tokens masked out.
     """
     def __init__(self, embed_dim, num_heads, window_size, dropout):
+        """ Build the window attention module with a learned per-window position embedding. """
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -261,6 +273,9 @@ class WindowedSpatialAttention(nn.Module):
         self.proj = nn.Linear(embed_dim, embed_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """ (B, T, C, H', W') -> (B, T, C, H', W'); pads to a whole number of windows,
+            runs windowed self-attention in chunks, and crops back to the input extent.
+        """
         B, T, C, Hp, Wp = x.shape
         ws = self.window_size
 
@@ -281,7 +296,7 @@ class WindowedSpatialAttention(nn.Module):
             valid = torch.zeros(Hpad, Wpad, dtype=torch.bool, device=x.device)
             valid[:Hp, :Wp] = True
             valid = valid.view(nH, ws, nW, ws).permute(0, 2, 1, 3).reshape(nH*nW, ws*ws)
-            # -- a window entirely outside the grid would mask every key and yield NaN
+            # -- a window entirely outside the grid masks every key and yields NaN
             valid[~valid.any(dim=1)] = True
             pad_mask = (~valid).repeat(B*T, 1)
 
@@ -289,7 +304,7 @@ class WindowedSpatialAttention(nn.Module):
         x_norm = self.norm(x_windows) + self.pos_embed
 
         # -- SDPA maps the window-batch axis onto a CUDA grid dimension capped at
-        #    65535; a full-grid batch exceeds it, so attention runs in chunks
+        #    65535; a full-grid batch exceeds it. Attention runs in chunks
         outs = []
         for i in range(0, x_norm.shape[0], self.attn_chunk):
             chunk = x_norm[i:i + self.attn_chunk]
@@ -316,11 +331,10 @@ class ChannelMixingAttention(nn.Module):
         - Apply MLP
         - Project back to a scalar per channel
 
-    Each (b, t, h', w') location is an independent attention problem, so the
-    N = B*T*H'*W' locations are processed in chunks: this block lifts every
-    channel to a d_model vector and is therefore d_model times wider than the
-    residual stream around it, which otherwise sets the memory ceiling for the
-    whole network. Chunking bounds that peak without altering the result.
+    Each (b, t, h', w') location is an independent attention problem; the
+    N = B*T*H'*W' locations are processed in chunks. This block lifts every
+    channel to a d_model vector, d_model times wider than the residual stream
+    around it. Chunking bounds that peak without altering the result.
     """
     # The fused kernels map the leading chunk_size*num_heads onto a CUDA grid
     # dimension and the launch fails past its cap. Measured on sm_86: 196608
@@ -328,6 +342,9 @@ class ChannelMixingAttention(nn.Module):
     MAX_ATTN_BATCH = 196608
 
     def __init__(self, num_channels, d_model, num_heads, mlp_ratio, dropout, chunk_size=4096):
+        """ Build the per-channel tokenizer, attention block, and channel-mixing MLP,
+            validating `chunk_size` against the CUDA batch cap.
+        """
         super().__init__()
         if chunk_size * num_heads > self.MAX_ATTN_BATCH:
             raise ValueError(
@@ -341,9 +358,8 @@ class ChannelMixingAttention(nn.Module):
         self.chunk_size = chunk_size
         self.dropout_p = dropout
 
-        # Per-channel tokenizer: a shared Linear(1, d_model) would leave tokens
-        # without channel identity, and attention is permutation equivariant, so
-        # two channels holding the same value could not be told apart.
+        # Per-channel tokenizer: each channel gets its own Linear(1, d_model),
+        # carrying channel identity into the permutation-equivariant attention.
         self.value_scale = nn.Parameter(torch.randn(num_channels, d_model) * 0.02)
         self.channel_embed = nn.Parameter(torch.randn(num_channels, d_model) * 0.02)
 
@@ -363,19 +379,18 @@ class ChannelMixingAttention(nn.Module):
         )
 
     def _tokenize(self, x_chunk: torch.Tensor) -> torch.Tensor:
-        # (n, embed_dim) -> (n, embed_dim, d_model)
+        """ (n, embed_dim) -> (n, embed_dim, d_model). """
         return x_chunk.unsqueeze(-1) * self.value_scale + self.channel_embed
 
     def _mix(self, h: torch.Tensor) -> torch.Tensor:
-        # (n, embed_dim, d_model) -> (n, embed_dim, d_model)
+        """ (n, embed_dim, d_model) -> (n, embed_dim, d_model). """
         n, C, D = h.shape
         h_norm = self.norm1(h)
 
         qkv = self.qkv(h_norm).view(n, C, 3, self.num_heads, D // self.num_heads)
         q, k, v = qkv.permute(2, 0, 3, 1, 4)
         # scaled_dot_product_attention keeps the (C, C) attention matrix out of
-        # memory; nn.MultiheadAttention materializes it whenever weights are
-        # requested, which is the default even when they are discarded
+        # memory; nn.MultiheadAttention materializes it by default
         attn = F.scaled_dot_product_attention(
             q, k, v, dropout_p=self.dropout_p if self.training else 0.0
         )
@@ -386,6 +401,9 @@ class ChannelMixingAttention(nn.Module):
         return self.out_proj(self._mix(self._tokenize(x_chunk))).squeeze(-1)
 
     def forward(self, x: torch.Tensor):
+        """ (B, T, embed_dim, H', W') -> (B, T, embed_dim, H', W'); recomputes each chunk
+            in backward under gradient checkpointing during training.
+        """
         B, T, embed_dim, Hp, Wp = x.shape
         assert embed_dim == self.num_channels, "ChannelMixBlock: num_channels doesn't match incoming embed_dim"
 
@@ -396,8 +414,8 @@ class ChannelMixingAttention(nn.Module):
         outs = []
         for i in range(0, x_flat.shape[0], self.chunk_size):
             x_chunk = x_flat[i:i + self.chunk_size]
-            # recomputing each chunk in backward keeps the widened tokens from
-            # being retained for every chunk at once
+            # checkpointing: each chunk is recomputed in backward; the widened
+            # tokens are not retained for every chunk at once
             outs.append(
                 checkpoint(self._block, x_chunk, use_reentrant=False)
                 if recompute else self._block(x_chunk)
@@ -414,17 +432,17 @@ class TemporalMixingAttention(nn.Module):
 
     Shape: (B, T, embed_dim, H', W') --> (B, T, embed_dim, H', W')
 
-    Attention is permutation equivariant, so without a positional term the block
-    reads the look-back window as an unordered bag of days: the same ten days in
-    any order produce an identical output. Fire weather is a sequence -- a drying
-    trend, a wind buildup, rain three days ago versus rain yesterday -- and none
-    of that survives an order-blind pooling. A learned per-day embedding added to
-    the residual stream restores day identity.
+    Attention is permutation equivariant; without a positional term the block
+    reads the look-back window as an unordered bag of days. Fire weather is a
+    sequence (a drying trend, a wind buildup, rain three days ago versus rain
+    yesterday). A learned per-day embedding added to the residual stream
+    carries day identity.
     """
     def __init__(self, embed_dim, num_heads, mlp_ratio, dropout, max_window: int = 64):
+        """ Build the per-day time embedding and the temporal self-attention block. """
         super().__init__()
-        # indexed from the end of the window, so position 0 is always the day
-        # being predicted from regardless of how long the window is
+        # indexed from the end of the window; position 0 is the day being
+        # predicted from, for any window length
         self.time_embed = nn.Parameter(torch.randn(max_window, embed_dim) * 0.02)
         self.max_window = max_window
         self.attn_chunk = 32768
@@ -449,11 +467,14 @@ class TemporalMixingAttention(nn.Module):
         )
 
     def forward(self, f):
+        """ (B, T, C, H', W') -> (B, T, C, H', W'); runs attention over time in chunks
+            along the flattened pixel axis.
+        """
         B, T, C, Hp, Wp = f.shape
         if T > self.max_window:
             raise ValueError(f"window of {T} days exceeds max_window={self.max_window}")
 
-        # collapse B/H'/W' -- each pixel for each channel across time
+        # collapse B/H'/W': each pixel for each channel across time
         f_permute = f.permute(0, 3, 4, 1, 2).contiguous()
         x = f_permute.view(B*Hp*Wp, T, C)
 
@@ -464,7 +485,7 @@ class TemporalMixingAttention(nn.Module):
         # residual stream itself untouched, with a LayerNorm per sub-block
         x_norm = self.norm(x)
         # -- SDPA maps the pixel-batch axis onto a CUDA grid dimension capped at
-        #    65535; a full-grid batch exceeds it, so attention runs in chunks
+        #    65535; a full-grid batch exceeds it. Attention runs in chunks
         outs = []
         for i in range(0, x_norm.shape[0], self.attn_chunk):
             chunk = x_norm[i:i + self.attn_chunk]
@@ -485,21 +506,23 @@ class TemporalMixingAttention(nn.Module):
 class BiHeadDecoder(nn.Module):
     """
     Convert spatiotemporal features into H x W risk map.
-    Input:  (B, embed_dim, H', W') -- time dimension collapsed to last day,
+    Input:  (B, embed_dim, H', W'), time dimension collapsed to last day,
             plus the encoder's per-resolution feature maps for that day
     Output: (B, 1, H, W) and (B, num_classes, H, W) per two heads
 
     One upsample step inverts each encoder stride-2 stage, fusing the encoder
-    map at that resolution. Interpolating straight from the deepest map would
-    cap the output at the stride the encoder ended on; the fused maps are what
-    let a fine-resolution run express structure below that stride.
+    map at that resolution. The fused maps carry structure below the stride
+    the encoder ended on.
 
-    Each step resizes to the shape of the map it fuses rather than by a fixed
-    factor, so odd extents survive the round trip and one model can train on
-    crops and predict over the full domain.
+    Each step resizes to the shape of the map it fuses, not by a fixed factor;
+    odd extents survive the round trip and one model trains on crops and
+    predicts over the full domain.
     """
     def __init__(self, embed_dim, n_cause_classes: int, depth: int = 1,
                  base_ch: int = 64, head_ch: int = 64):
+        """ Build the upsample-and-fuse stages, deepest first, plus the ignition
+            and cause output heads.
+        """
         super().__init__()
         self.n_cause_classes = n_cause_classes
         self.depth = depth
@@ -522,6 +545,9 @@ class BiHeadDecoder(nn.Module):
         self.cause_head = nn.Conv2d(head_ch, self.n_cause_classes, kernel_size=1)
 
     def forward(self, x: torch.Tensor, skips, film: Optional[FilmLevels] = None):
+        """ (B, embed_dim, H', W') plus skip maps -> (B, 1, H, W) ignition logits and
+            (B, n_cause_classes, H, W) cause logits.
+        """
         f = x
         # -- deepest first; the level the encoder ended on was already conditioned there
         for i, (block, skip) in enumerate(zip(self.fuse, reversed(skips))):

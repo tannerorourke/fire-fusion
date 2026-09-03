@@ -8,8 +8,8 @@ Output:
     - A (B, 1, H, W) map of P(fresh ignition within 7 days of t_n) in [0, 1]. '
 
 The model emits raw logits; a fitted Platt calibrator maps them to probabilities. 
-Absent a fitted sidecar, the analytic correction for the training-time negative 
-subsampling stands into make checkpoints usable.
+Absent a fitted sidecar, the analytic correction for the training-time negative
+subsampling stands in.
 """
 import argparse
 import json
@@ -90,7 +90,7 @@ def load_predictor(
     if checkpoint is None:
         checkpoint = f"{checkpoint_name(experiment)}.th"
 
-    fold = params["training"].get("fold", "legacy")
+    fold = params["training"].get("fold", "full")
     manifest = json.loads(get_dataset_config(dataset_name, fold).manifest_path.read_text())
 
     # -- Derive the model's static and dynamic channel counts
@@ -165,6 +165,9 @@ def plot_XY_grid(
 
 
 def main():
+    """ Load a predictor, run prediction batches from the configured split, and
+        save probability heatmaps under PLOTS_DIR.
+    """
     args = parser.parse_args()
 
     with open(f"{MODEL_DIR}/params.json") as f:
@@ -176,7 +179,7 @@ def main():
         args.split, dataset, num_workers=0, batch_size=1,
         encoder_depth=params["model"]["encoder_depth"],
         attn_window=params["model"]["win_spatial_mixing"]["window_size"],
-        fold=params["training"].get("fold", "legacy"),
+        fold=params["training"].get("fold", "full"),
     )
 
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
