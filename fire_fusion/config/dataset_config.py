@@ -101,8 +101,8 @@ class DatasetConfig:
 
     @property
     def fold_root(self) -> Path:
-        # -- the default fold compiles at the dataset root; every other fold
-        #    gets its own subtree
+        """ Root of this fold's compiled output: the dataset root for the default
+            fold, a subtree named after the fold otherwise. """
         return self.root if self.fold == "full" else self.root / self.fold
 
     @property

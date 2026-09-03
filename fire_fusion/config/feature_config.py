@@ -35,7 +35,7 @@ CAUSAL_CLASSES = [
 CAUSE_MERGE = {"DEBRIS": "INDUSTRIAL"}
 
 def compiled_cause_classes() -> List[str]:
-    # -- CAUSAL_CLASSES after merging, in output order; index is the label value
+    """ CAUSAL_CLASSES after merging, in output order; index is the label value. """
     out: List[str] = []
     for c in CAUSAL_CLASSES:
         target = CAUSE_MERGE.get(c, c)
@@ -45,7 +45,7 @@ def compiled_cause_classes() -> List[str]:
 
 
 def cause_index_remap() -> Dict[int, int]:
-    # -- extracted class index -> compiled class index
+    """ Maps extracted class index to compiled class index. """
     compiled = compiled_cause_classes()
     return {i: compiled.index(CAUSE_MERGE.get(c, c)) for i, c in enumerate(CAUSAL_CLASSES)}
 
@@ -162,8 +162,9 @@ class Feature:
 def get_labels():
     return [l for l in drv_feat_config() if l.is_label==True]
 
-# -- every mask equals 1 where the cell is usable for the head it gates
 def get_masks():
+    """ Mask feature declarations, derived and source; every mask equals 1 where
+        the cell is usable for the head it gates. """
     return (
         [f for f in drv_feat_config() if f.is_mask==True] +
         [f for feats in base_feat_config().values() for f in feats if f.is_mask==True]
@@ -187,6 +188,7 @@ def channel_group_indices(names: Sequence[str]) -> Dict[str, List[int]]:
 
 
 def base_feat_config():
+    """ Returns the raw-source feature definitions, keyed by source group name. """
     return {
         "PRISM": [
             Feature(
@@ -489,8 +491,10 @@ def base_feat_config():
     }
 
 
-# -- order matters: later derivations consume the output of earlier ones
 def drv_feat_config() -> List[Feature]:
+    """ Returns the derived feature definitions, in dependency order: later
+        derivations consume the output of earlier ones.
+    """
     return [
         # -- fire state: fused burn events and what a forecaster can see. The
         #    satellite and perimeter layers are label-side only and leave here.

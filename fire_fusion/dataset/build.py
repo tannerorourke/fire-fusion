@@ -61,7 +61,7 @@ VALIDATE_TIME_CHUNK = 64
 
 # -- Utility functions ------------------------------------------------------
 def _rss_gb() -> float:
-    # Resident set size of this process, for extraction memory tracing
+    """ Resident set size of this process in GB, for extraction memory tracing. """
     try:
         with open("/proc/self/status") as fh:
             for line in fh:
@@ -115,6 +115,7 @@ class FeatureGrid:
         raw sources -> cube.zarr -> dataset.zarr -> {train,eval,test}.zarr + manifest.json
     """
     def __init__(self, ds_cfg: DatasetConfig):
+        """ Build the season time index and master coordinate grid for ds_cfg. """
         self.cfg = ds_cfg
         self.fconfig = base_feat_config()
         self.drv_config = drv_feat_config()
@@ -309,6 +310,7 @@ class FeatureGrid:
         self._save_published(ds, det_stats)
 
     def _save_published(self, ds: xr.Dataset, det_stats: Dict) -> None:
+        """ Cast labels and masks, chunk and write ds to the published cube, and write its manifest. """
         print("Publishing the split-agnostic cube...")
         excluded = set(self.label_names) | set(self.mask_names)
         ny, nx = ds.sizes["y"], ds.sizes["x"]
@@ -427,6 +429,11 @@ class FeatureGrid:
         return ds
 
     def _apply_derived(self, ds: xr.Dataset, train_yrs: Optional[Tuple[int, int]]) -> xr.Dataset:
+        """ Compute each configured derived feature and merge it into ds.
+
+            train_yrs restricts any train-dependent derivation's statistics to
+            those years.
+        """
         print(f"[FeatureGrid] Deriving anti-arson techniques through feature derivation..")
 
         drv_processor = DerivedProcessor(train_yrs=train_yrs)
@@ -613,6 +620,7 @@ class FeatureGrid:
         return ds
 
     def _compute_pos_weight(self, ds: xr.Dataset) -> float:
+        """ Return the negative-to-positive ignition ratio over the supervised train population. """
         train = _years_sel(ds, self.cfg.split_years("train"))
         ign = train["burn_next"]
         no_act_fire_mask = train["no_act_fire_mask"]
@@ -635,6 +643,7 @@ class FeatureGrid:
         return ign_pos_weight
 
     def _compute_cause_counts(self, ds: xr.Dataset, n_cause_classes: int) -> List[int]:
+        """ Count of supervised, labelled ignitions per cause class over the train split. """
         train = _years_sel(ds, self.cfg.split_years("train"))
         ign = train["burn_next"]
         cause = train["burn_next_cause"]
@@ -656,6 +665,8 @@ class FeatureGrid:
         self, ds: xr.Dataset, norm_stats: Dict, pos_weight: float,
         n_cause_classes: int, cause_counts: List[int]
     ) -> None:
+        """ Stack ds's channels into X, chunk and write the train/eval/test splits,
+            and write their manifest. """
         print("Spraying neutrino stabilization goo in sub-basement level 7...")
         excluded = set(self.label_names) | set(self.mask_names)
 
@@ -784,6 +795,7 @@ class FeatureGrid:
         print(f"\n[validate] {self.cfg.name} >> {'ALL PASS' if all_ok else 'FAILURES PRESENT'}")
 
     def _validate_split(self, split: str, n_cause: int) -> Dict[str, Tuple[bool, str]]:
+        """ Stream split in time chunks and return a PASS/FAIL detail per invariant checked. """
         ds = xr.open_zarr(self.cfg.split_path(split))
         T = ds["X"].sizes["time"]
 

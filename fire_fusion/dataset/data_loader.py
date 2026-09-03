@@ -77,6 +77,8 @@ class FireDataset(Dataset):
         encoder_depth: int = 1,
         attn_window: int = 2,
     ):
+        """ Open a split's zarr store and derive channel groupings, crop geometry,
+            and window starts from its manifest. """
         super().__init__()
         self.manifest = json.loads(ds_config.manifest_path.read_text())
 
@@ -168,6 +170,8 @@ class FireDataset(Dataset):
         return len(self.window_starts)
 
     def _crop_origin(self) -> Tuple[int, int]:
+        """ Random (y, x) crop origin, aligned to crop_align, from the alignable
+            range of the grid. """
         H, W = self.out_size
         align = self.crop_align
         y = self._rng.integers(0, (H - self.read_size) // align + 1) * align
@@ -175,6 +179,11 @@ class FireDataset(Dataset):
         return int(y), int(x)
 
     def __getitem__(self, idx: int) -> Tuple[Tuple[torch.Tensor, torch.Tensor], Dict, Dict]:
+        """ Read one window and return ((x_dyn, x_static), labels, masks).
+
+            Uncropped reads take the full grid; a cropped read picks a random
+            aligned origin, then zeroes halo cells out of every mask.
+        """
         t0 = int(self.window_starts[idx])
         t1 = t0 + self.window_size
         last = t1 - 1
@@ -244,6 +253,11 @@ def init_data_loader(
     attn_window: int = 2,
     fold: str = "full",
 ):
+    """ Build a FireDataset for split and wrap it in a torch DataLoader.
+
+        Cropping applies only to the train split; shuffling and a per-worker
+        seed follow the same rule.
+    """
     ds = FireDataset(
         get_dataset_config(dataset_name, fold),
         split,

@@ -27,14 +27,14 @@ def rss_gb() -> float:
 
 
 def release_memory() -> None:
-    # -- glibc keeps arenas after free(); RSS climbs across a per-year extraction
-    # -- loop with little live. malloc_trim returns them.
+    """ Return freed glibc arenas to the OS after a per-year extraction loop. """
     gc.collect()
     if _LIBC is not None:
         _LIBC.malloc_trim(0)
 
 
 def print_layer_stats(name: str, da: xr.DataArray) -> None:
+    """ Print min, max, mean, std, and the finite-value fraction for a layer. """
     # -- skipna reductions ignore NaN in place; integer layers carry none.
     # -- da.where(np.isfinite(da)) materializes a float64 copy, past the memory
     # -- guard at daily-MODIS scale.
@@ -72,6 +72,7 @@ MODIS_SINU_CRS = "+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +R=6371007.181 +units=m +no_
 
 
 def _hdfeos_tile_bounds(sd: SD) -> Tuple[float, float, float, float]:
+    """ Return a tile's (ulx, uly, lrx, lry) bounds parsed from its StructMetadata.0 envelope. """
     # -- every grid in a MODIS tile shares the tile envelope; the first block
     # -- describes them all. Resolution comes from each field's own shape.
     meta = sd.attributes()["StructMetadata.0"]

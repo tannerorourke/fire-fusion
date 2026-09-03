@@ -56,6 +56,7 @@ class B2Store:
     """ Minimal keyed object store over a Backblaze B2 bucket (S3 API). """
 
     def __init__(self, bucket: Optional[str] = None, endpoint: Optional[str] = None):
+        """ Open an S3 client against the B2 endpoint and verify the bucket is reachable. """
         import boto3
         from botocore.config import Config
 
@@ -143,6 +144,7 @@ def _sync_processed(
     store: "B2Store", action: str, ds: str,
     members: Iterable[str], overwrite: bool, fold: str = "full",
 ) -> None:
+    """ Push or pull each named build member of dataset ds between local disk and B2. """
     # -- split stores of a non-default fold live one directory down, on both sides
     for member in members:
         sub = fold if fold != "full" and member in PROCESSED_STEPS["splits"] else None
