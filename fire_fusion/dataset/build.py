@@ -101,8 +101,8 @@ parser.add_argument("--stage", help="pipeline stage to run",
 parser.add_argument("--fold", help="named fold in FOLDS supplying the split years; compile and validate read it",
     default="full"
 )
-parser.add_argument("--sources", help="extract only these processors, rewriting their variables into the existing cube; the default rebuilds it from every source"
-     nargs="+", default=None,
+parser.add_argument("--sources", help="extract only these processors, rewriting their variables into the existing cube; the default rebuilds it from every source",
+    nargs="+", default=None,
 )
 parser.add_argument("--splits", help="splits validate reads back", 
     nargs="+", default=["train", "eval", "test"],
