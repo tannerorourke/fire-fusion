@@ -1,13 +1,17 @@
 """
 Score extracted prediction archives, one stage per question: native per-tier
-skill against climatology, cross-tier comparison on a pooled common grid,
-allocation on a fixed evaluation grid, cause skill over the class prior, and
-sub-cell localization.
+skill against climatology, the joint rate-times-placement decomposition,
+cross-tier comparison on a pooled common grid, allocation on a fixed evaluation
+grid, the field against its own static map, cause skill over the class prior,
+and sub-cell localization.
 
 Stages are independent, every one reads through archive.load_archive, and each
-writes a single JSON report under REPORTS_DIR.
+writes a single JSON report under REPORTS_DIR. An intervention archive
+('<exp>@met_year') is an experiment name to every stage.
 
   python -m fire_fusion.analysis.score native --experiments wa2000-s1 --split test
+  python -m fire_fusion.analysis.score joint --experiments wa4000-s1 --split test
+  python -m fire_fusion.analysis.score static --experiments wa4000-s1 --coarse-res 4000 --static-from train
   python -m fire_fusion.analysis.score pooled --experiments wa2000-s1 wa1000-s1 cascades500-s1
   python -m fire_fusion.analysis.score allocation --experiments cascades500-optimal --footprint self
 """
@@ -17,32 +21,18 @@ import json
 import numpy as np
 
 from ..config.path_config import REPORTS_DIR
-from .allocation import (DEFAULT_BUDGETS, day_sums, fit_persistence, fit_temperature,
-                         localization_scores, persistence, report as allocation_report,
-                         strata)
+from .allocation import (DEFAULT_BUDGETS, PERSIST_KM, cells, day_sums, fit_persistence,
+                         fit_temperature, localization_scores, persistence,
+                         report as allocation_report, static_map, strata)
 from .archive import climatology_for, coarse_grid, load_archive, restrict_to_footprint
 from .extract import extract
 from .grid import (build_membership, common_supervision, evaluation_grid, pool_fields,
                    reference_envelope)
+from .joint import stage_joint
 from .scores import (
-    cause_ignorance_bits, cox_calibration, ignorance_bits, murphy_decomposition,
-    year_block_bootstrap,
+    by_year, cause_ignorance_bits, cox_calibration, ignorance_bits, murphy_decomposition,
+    per_day_sums, year_block_bootstrap,
 )
-
-
-def _per_day_sums(fields: dict, mask: np.ndarray) -> dict:
-    """ Per-day masked sums of supervised cell count 'n' and each field in 'fields'. """
-    m = mask.astype(bool)
-    out = {"n": m.reshape(m.shape[0], -1).sum(axis=1).astype(np.float64)}
-    for k, v in fields.items():
-        out[k] = (v * m).reshape(v.shape[0], -1).sum(axis=1)
-    return out
-
-
-def _by_year(day_sums: dict, years: np.ndarray) -> dict:
-    """ Per-day sums split into per-year arrays for the bootstrap to resample in blocks. """
-    return {int(yr): {k: np.asarray(v)[years == yr] for k, v in day_sums.items()}
-            for yr in np.unique(years)}
 
 
 def _paired(per_year_by_exp: dict) -> dict:
@@ -78,10 +68,10 @@ def stage_native(experiments, split, bandwidth_km, n_boot, seed, calibrated) -> 
         bs_model = (arc["p"].astype(np.float64) - arc["y"]) ** 2
         bs_clim = (clim - arc["y"]) ** 2
 
-        day = _per_day_sums(
+        day = per_day_sums(
             {"ign_m": ign_model, "ign_c": ign_clim, "bs_m": bs_model,
              "bs_c": bs_clim, "pos": arc["y"].astype(np.float64)}, m)
-        per_year = _by_year(day, arc["years"])
+        per_year = by_year(day, arc["years"])
 
         flat_p, flat_y = arc["p"][m].astype(np.float64), arc["y"][m].astype(np.float64)
         entry = {
@@ -115,11 +105,11 @@ def stage_compare(experiments, split, bandwidth_km, footprint, n_boot, seed,
         restrict_to_footprint(arc, footprint)
         clim = climatology_for(arc, bandwidth_km)
         m = arc["mask"].astype(bool)
-        day = _per_day_sums(
+        day = per_day_sums(
             {"ign_m": ignorance_bits(arc["p"].astype(np.float64), arc["y"]),
              "ign_c": ignorance_bits(clim, arc["y"]),
              "pos": arc["y"].astype(np.float64)}, m)
-        per_year[exp] = _by_year(day, arc["years"])
+        per_year[exp] = by_year(day, arc["years"])
         native[exp] = {
             "resolved_bits": float((day["ign_c"].sum() - day["ign_m"].sum()) / day["n"].sum()),
             "n_events": float(day["pos"].sum()), "n_cell_days": float(day["n"].sum()),
@@ -184,7 +174,7 @@ def stage_pooled(experiments, split, bandwidth_km, footprint, coarse_res,
             "pos": (y_union.astype(np.float64) * sup).sum(axis=1),
             "n": sup.sum(axis=1).astype(np.float64),
         }
-        per_year = _by_year(day, years_ref)
+        per_year = by_year(day, years_ref)
         report["tiers"][exp] = {
             "ign_bits": float(day["ign_m"].sum() / day["n"].sum()),
             "ign_bits_clim": float(day["ign_c"].sum() / day["n"].sum()),
@@ -214,25 +204,40 @@ def _pooled_arm(exp, split, bandwidth_km, footprint, coarse_res, calibrated):
     return out
 
 
+def _static_fields(pooled: dict, cal: dict, exp: str, field: str, split_args: tuple) -> None:
+    # -- replaces the arm's field with its static map, from the scored split or
+    #    the train years, broadcast over the scored and calibration days
+    src = pooled[exp] if field == "static" else _pooled_arm(exp, "train", *split_args)
+    smap = static_map(src["p"], src["n_supervised"] > 0)
+    pooled[exp]["p"] = np.broadcast_to(smap, pooled[exp]["p"].shape)
+    cal[exp]["p"] = np.broadcast_to(smap, cal[exp]["p"].shape)
+
+
 def stage_allocation(experiments, split, bandwidth_km, footprint, coarse_res,
                      n_boot, seed, calibrated, label_source=None,
-                     calibrate_split="eval") -> dict:
+                     calibrate_split="eval", field="model", persist_km=PERSIST_KM) -> dict:
     """ Placement skill on a fixed evaluation grid, invariant to the burn rate.
 
         A named footprint scores every model on the same ground; 'self' keeps
         each model's own extent. `label_source`, required on a named footprint,
-        is the coarsest tier scored; its pooled labels are the target. (w, r)
-        and s are fitted on `calibrate_split`. Numbers reported overall
-        and per stratum.
+        is the coarsest tier scored; its pooled labels are the target. w and s
+        are fitted on `calibrate_split`; the ring radius is `persist_km`, or
+        fitted in cells when 0. `field` scores the model's field, or its
+        static map from the split ('static') or the train years ('static-train').
     """
     if footprint != "self" and label_source is None:
         raise SystemExit("a named footprint needs --label-source, the coarsest tier scored")
     report = {"footprint": footprint, "coarse_res_m": coarse_res, "split": split,
-              "calibrate_split": calibrate_split, "budgets": list(DEFAULT_BUDGETS), "tiers": {}}
+              "calibrate_split": calibrate_split, "field": field, "persist_km": persist_km,
+              "budgets": list(DEFAULT_BUDGETS), "tiers": {}}
     pooled = {e: _pooled_arm(e, split, bandwidth_km, footprint, coarse_res, calibrated)
               for e in experiments}
     cal = {e: _pooled_arm(e, calibrate_split, bandwidth_km, footprint, coarse_res, calibrated)
            for e in experiments}
+    if field != "model":
+        for e in experiments:
+            _static_fields(pooled, cal, e, field, (bandwidth_km, footprint, coarse_res, calibrated))
+    ring = None if persist_km == 0 else cells(persist_km, coarse_res)
 
     if footprint == "self":
         supervision = {e: pooled[e]["n_supervised"] > 0 for e in experiments}
@@ -264,7 +269,7 @@ def stage_allocation(experiments, split, bandwidth_km, footprint, coarse_res,
         active = pooled[exp]["active"]
         spread = strata(active, coarse_res)
         # -- fitted on the calibration split, applied unchanged here
-        pers = fit_persistence(cal[exp]["clim"], cal[exp]["active"], cal_y[exp], cal_sup[exp])
+        pers = fit_persistence(cal[exp]["clim"], cal[exp]["active"], cal_y[exp], cal_sup[exp], ring)
         temp = fit_temperature(cal[exp]["p"], cal_y[exp], cal_sup[exp])
         fields = {
             "model": pooled[exp]["p"],
@@ -273,7 +278,8 @@ def stage_allocation(experiments, split, bandwidth_km, footprint, coarse_res,
             "persistence": persistence(pooled[exp]["clim"], active, sup, pers["w"], pers["r"]),
         }
         entry = {"grid": list(pooled[exp]["grid"]), "temperature": temp,
-                 "persistence": {"w": pers["w"], "r_cells": pers["r"]},
+                 "persistence": {"w": pers["w"], "r_cells": pers["r"],
+                                 "r_km": pers["r"] * coarse_res / 1000.0},
                  "mean_supervised_cells_per_day": float(sup.sum((1, 2)).mean())}
         for stratum, sel in (("all", None), ("spread", spread), ("ignition", ~spread)):
             sums = {k: day_sums(f, y, sup, events=sel) for k, f in fields.items()}
@@ -282,7 +288,7 @@ def stage_allocation(experiments, split, bandwidth_km, footprint, coarse_res,
             block["tempered"] = {k: tempered[k] for k in ("skill_vs_clim", "skill_vs_persistence",
                                                            "skill_vs_uniform")} if tempered.get("n_events") else {}
             if block.get("n_events"):
-                per_year = _by_year({"bits_m": sums["model"]["bits"], "bits_c": sums["clim"]["bits"],
+                per_year = by_year({"bits_m": sums["model"]["bits"], "bits_c": sums["clim"]["bits"],
                                      "bits_p": sums["persistence"]["bits"],
                                      "uniform": sums["model"]["uniform"], "n": sums["model"]["events"]},
                                     pooled[exp]["years"])
@@ -293,6 +299,68 @@ def stage_allocation(experiments, split, bandwidth_km, footprint, coarse_res,
                 block["skill_vs_uniform_ci"] = year_block_bootstrap(
                     per_year, lambda s: 1 - s["bits_m"] / s["uniform"], n_boot, seed)
             entry[stratum] = block
+        report["tiers"][exp] = entry
+    return report
+
+
+def _top_jaccard(f: np.ndarray, sup: np.ndarray, frac: float = 0.01) -> float:
+    # -- mean day-to-day overlap of the top fraction of supervised cells; a
+    #    static map reads 1, climatology near it
+    D = f.shape[0]
+    tops = []
+    for d in range(D):
+        idx = np.flatnonzero(sup[d])
+        k = max(1, int(round(frac * idx.size)))
+        tops.append(set(idx[np.argsort(f[d].ravel()[idx])[-k:]]))
+    return float(np.mean([len(a & b) / len(a | b) for a, b in zip(tops[:-1], tops[1:]) if a | b]))
+
+
+def stage_static(experiments, split, bandwidth_km, coarse_res, n_boot, seed,
+                 calibrated, static_from=None) -> dict:
+    """ The field against its own static map on the model's own grid: allocation
+        per stratum for the field, its time average over this split (and over
+        the train years with `static_from='train'`), climatology and uniform,
+        plus how much the field moves. If the static map matches the field on
+        the ignition stratum, the dynamic inputs place nothing there.
+    """
+    report = {"split": split, "coarse_res_m": coarse_res, "static_from": static_from,
+              "budgets": list(DEFAULT_BUDGETS), "tiers": {}}
+    for exp in experiments:
+        arm = _pooled_arm(exp, split, bandwidth_km, "self", coarse_res, calibrated)
+        p, y, sup = arm["p"], arm["y"], arm["n_supervised"] > 0
+        smap = static_map(p, sup)
+        fields = {"model": p, "static": np.broadcast_to(smap, p.shape), "clim": arm["clim"]}
+        if static_from == "train":
+            tr = _pooled_arm(exp, "train", bandwidth_km, "self", coarse_res, calibrated)
+            fields["static_train"] = np.broadcast_to(static_map(tr["p"], tr["n_supervised"] > 0), p.shape)
+        spread = strata(arm["active"], coarse_res)
+
+        entry = {"grid": list(arm["grid"]), "n_days": int(p.shape[0]),
+                 "n_cell_days": float(sup.sum()), "n_events": float((y * sup).sum()), "strata": {}}
+        for stratum, sel in (("all", None), ("spread", spread), ("ignition", ~spread)):
+            sums = {k: day_sums(f, y, sup, events=sel) for k, f in fields.items()}
+            block = {}
+            for k in fields:
+                r = allocation_report(sums[k], {"clim": sums["clim"]})
+                if not r.get("n_events"):
+                    block[k] = r
+                    continue
+                block[k] = {kk: r[kk] for kk in ("n_events", "bits_per_event", "skill_vs_uniform", "skill_vs_clim")}
+                block[k]["capture"] = {b: v["model"] for b, v in r["capture"].items()}
+                per_year = by_year({"bits": sums[k]["bits"], "bits_m": sums["model"]["bits"],
+                                    "bits_c": sums["clim"]["bits"], "n": sums[k]["events"]}, arm["years"])
+                block[k]["skill_vs_clim_ci"] = year_block_bootstrap(
+                    per_year, lambda s: 1 - s["bits"] / s["bits_c"], n_boot, seed)
+                if k != "model":
+                    # -- paired: bits per event this field resolves beyond the model
+                    block[k]["resolved_over_model_ci"] = year_block_bootstrap(
+                        per_year, lambda s: (s["bits_m"] - s["bits"]) / s["n"], n_boot, seed)
+            entry["strata"][stratum] = block
+
+        mean_map = np.where(sup.sum(0) > 0, smap, np.nan)
+        entry["temporal_over_spatial_variance"] = float(
+            np.nanmean(np.where(sup, (p - mean_map) ** 2, np.nan)) / np.nanvar(mean_map))
+        entry["top1_jaccard"] = {k: _top_jaccard(fields[k], sup) for k in ("model", "clim")}
         report["tiers"][exp] = entry
     return report
 
@@ -329,8 +397,8 @@ def stage_localization(experiments, split, footprint, coarse_res, calibrated) ->
 def main():
     """ Parse CLI arguments, run the requested scoring stage, and write the report JSON. """
     ap = argparse.ArgumentParser(description="Score extracted prediction archives")
-    ap.add_argument("stage", choices=["extract", "native", "pooled", "allocation",
-                                      "cause", "localization", "compare"])
+    ap.add_argument("stage", choices=["extract", "native", "joint", "pooled", "allocation",
+                                      "static", "cause", "localization", "compare"])
     ap.add_argument("--experiments", nargs="+", required=True)
     ap.add_argument("--split", default="test", choices=["train", "eval", "test"])
     ap.add_argument("--bandwidth-km", type=float, default=20.0)
@@ -341,6 +409,12 @@ def main():
     ap.add_argument("--calibrate-split", default="eval", choices=["train", "eval"],
                     help="split whose archive fits the persistence blend and temperature")
     ap.add_argument("--coarse-res", type=float, default=2000.0)
+    ap.add_argument("--field", default="model", choices=["model", "static", "static-train"],
+                    help="allocation: score the field, or its static map from the split or the train years")
+    ap.add_argument("--persist-km", type=float, default=PERSIST_KM,
+                    help="persistence ring radius in km, converted per grid; 0 fits it in cells")
+    ap.add_argument("--static-from", default=None, choices=["train"],
+                    help="static: also score the map averaged over the train years")
     ap.add_argument("--n-boot", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--raw", action="store_true",
@@ -356,6 +430,13 @@ def main():
     if args.stage == "native":
         report = stage_native(args.experiments, args.split, args.bandwidth_km,
                               args.n_boot, args.seed, calibrated)
+    elif args.stage == "joint":
+        report = stage_joint(args.experiments, args.split, args.bandwidth_km,
+                             args.n_boot, args.seed, calibrated)
+    elif args.stage == "static":
+        report = stage_static(args.experiments, args.split, args.bandwidth_km,
+                              args.coarse_res, args.n_boot, args.seed, calibrated,
+                              args.static_from)
     elif args.stage == "pooled":
         report = stage_pooled(args.experiments, args.split, args.bandwidth_km,
                               args.footprint, args.coarse_res, args.n_boot,
@@ -364,7 +445,7 @@ def main():
         report = stage_allocation(args.experiments, args.split, args.bandwidth_km,
                                   args.footprint, args.coarse_res, args.n_boot,
                                   args.seed, calibrated, args.label_source,
-                                  args.calibrate_split)
+                                  args.calibrate_split, args.field, args.persist_km)
     elif args.stage == "cause":
         report = stage_cause(args.experiments, args.split, calibrated)
     elif args.stage == "compare":
@@ -375,7 +456,8 @@ def main():
                                     args.coarse_res, calibrated)
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    name = f"{args.stage}_{args.split}_{'-'.join(args.experiments)}.json"
+    stage = args.stage if args.field == "model" else f"{args.stage}-{args.field}"
+    name = f"{stage}_{args.split}_{'-'.join(args.experiments)}.json"
     out = REPORTS_DIR / name
     out.write_text(json.dumps(report, indent=1, default=float))
     print(json.dumps(report, indent=1, default=float))

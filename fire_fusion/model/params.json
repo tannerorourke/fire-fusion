@@ -143,6 +143,109 @@
       "alpha_alloc": 1.0
     }
   },
+  "wa4000-static": {
+    "dataset": "wa4000",
+    "model": {
+      "embed_dim": 192,
+      "encoder_depth": 1,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.1
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1,
+        "chunk_size": 4096
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.15,
+      "drop_groups": [
+        "MET",
+        "STATE"
+      ]
+    },
+    "training": {
+      "seed": 1,
+      "batch_size": 4,
+      "epochs": [
+        5,
+        32,
+        10
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold3",
+      "alpha_alloc": 1.0
+    }
+  },
+  "wa4000-nomet": {
+    "dataset": "wa4000",
+    "model": {
+      "embed_dim": 192,
+      "encoder_depth": 1,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.1
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1,
+        "chunk_size": 4096
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.15,
+      "drop_groups": [
+        "MET"
+      ]
+    },
+    "training": {
+      "seed": 1,
+      "batch_size": 4,
+      "epochs": [
+        5,
+        32,
+        10
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold3",
+      "alpha_alloc": 1.0
+    }
+  },
   "wa2000-s1": {
     "dataset": "wa2000",
     "model": {
@@ -178,8 +281,8 @@
       "compile": false,
       "epochs": [
         5,
-        32,
-        10
+        20,
+        6
       ],
       "min_lr": 1e-06,
       "base_lr": 0.001,
@@ -229,8 +332,8 @@
       "compile": false,
       "epochs": [
         5,
-        32,
-        10
+        20,
+        6
       ],
       "min_lr": 1e-06,
       "base_lr": 0.001,
@@ -280,8 +383,8 @@
       "compile": false,
       "epochs": [
         5,
-        32,
-        10
+        20,
+        6
       ],
       "min_lr": 1e-06,
       "base_lr": 0.001,
@@ -331,8 +434,8 @@
       "compile": false,
       "epochs": [
         5,
-        32,
-        10
+        20,
+        6
       ],
       "min_lr": 1e-06,
       "base_lr": 0.001,
@@ -382,8 +485,8 @@
       "compile": false,
       "epochs": [
         5,
-        32,
-        10
+        20,
+        6
       ],
       "min_lr": 1e-06,
       "base_lr": 0.001,
@@ -433,8 +536,8 @@
       "compile": false,
       "epochs": [
         5,
-        32,
-        10
+        20,
+        6
       ],
       "min_lr": 1e-06,
       "base_lr": 0.001,
@@ -484,8 +587,59 @@
       "compile": false,
       "epochs": [
         5,
-        32,
-        10
+        20,
+        6
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold3",
+      "alpha_alloc": 1.0
+    }
+  },
+  "cascades500-optimal-s2": {
+    "dataset": "cascades500",
+    "model": {
+      "embed_dim": 256,
+      "encoder_depth": 3,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.1
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1,
+        "chunk_size": 32768
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.15
+    },
+    "training": {
+      "seed": 2,
+      "batch_size": 1,
+      "accum_steps": 8,
+      "max_workers": 20,
+      "compile": false,
+      "epochs": [
+        5,
+        20,
+        6
       ],
       "min_lr": 1e-06,
       "base_lr": 0.001,
@@ -535,8 +689,8 @@
       "compile": false,
       "epochs": [
         5,
-        32,
-        10
+        20,
+        6
       ],
       "min_lr": 1e-06,
       "base_lr": 0.001,
@@ -586,8 +740,8 @@
       "compile": false,
       "epochs": [
         5,
-        32,
-        10
+        20,
+        6
       ],
       "min_lr": 1e-06,
       "base_lr": 0.001,

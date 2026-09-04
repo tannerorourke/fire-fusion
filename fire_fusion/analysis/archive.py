@@ -20,14 +20,13 @@ from .grid import build_membership, evaluation_grid, reference_envelope
 
 
 def last_day(t):
-    """ Final-day slice of a (B, T, H, W) window field, or 't' unchanged if it is not 4D. """
+    # -- final-day slice of a (B, T, H, W) window field; non-4D passes through
     return t[:, -1] if t.ndim == 4 else t
 
 
 def supervised(ds):
-    """ Bool selection: land cells with no active fire, the cells the ignition head is
-        supervised on. Read by name from a store, a loader's mask dict, or an archive.
-    """
+    # -- the ignition head's population: land with no active fire, read by name
+    #    from a store, a loader's mask dict, or an archive
     return (ds["land_mask"] == 1) & (ds["no_act_fire_mask"] == 1)
 
 
@@ -40,9 +39,11 @@ def load_archive(experiment: str, split: str, calibrated: bool = True) -> dict:
     """
     path = PRED_DIR / f"{experiment}_{split}.npz"
     if not path.exists():
-        # -- lazy import: a cache miss is the only path that loads a checkpoint
+        # -- lazy import: a cache miss is the only path that loads a checkpoint.
+        #    '<exp>@<group>_<mode>' names an intervention archive of <exp>
         from .extract import extract
-        extract(experiment, split)
+        base, _, spec = experiment.partition("@")
+        extract(base, split, intervene=spec.replace("_", ":") or None)
     arc = np.load(path)
     side = json.loads((PRED_DIR / f"{experiment}_{split}.json").read_text())
 
@@ -79,9 +80,7 @@ def climatology_for(arc: dict, bandwidth_km: float) -> np.ndarray:
 
 
 def restrict_to_footprint(arc: dict, footprint: str) -> None:
-    """ Narrow the archive's supervision mask in place to cells inside the footprint's
-        coordinate envelope.
-    """
+    # -- narrows the supervision mask in place to the footprint's envelope
     x0, x1, y0, y1 = reference_envelope(footprint)
     inside = ((arc["y_coords"] >= y0) & (arc["y_coords"] <= y1))[:, None] \
         & ((arc["x"] >= x0) & (arc["x"] <= x1))[None, :]
@@ -89,10 +88,8 @@ def restrict_to_footprint(arc: dict, footprint: str) -> None:
 
 
 def coarse_grid(arc: dict, footprint: str, coarse_res: float):
-    """ (membership, shape) for a coarse grid over the archive: 'self' keeps the
-        archive's own extent, a named footprint uses its reference envelope and
-        restricts the archive's supervision to it.
-    """
+    # -- (membership, shape) of a coarse grid: 'self' keeps the archive's extent,
+    #    a named footprint restricts supervision to its envelope
     if footprint == "self":
         env = (float(arc["x"].min()), float(arc["x"].max()),
                float(arc["y_coords"].min()), float(arc["y_coords"].max()))

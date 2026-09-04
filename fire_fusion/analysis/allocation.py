@@ -19,33 +19,50 @@ burned, how well does the fine field place the event inside it.
 
 Two references and two strata. Climatology cannot place spread. The persistence
 blend, climatology mixed with a dilation of the cells burning today, is the
-reference where fire is already on the ground.
+reference where fire is already on the ground. Its ring is held in kilometres
+so every tier is scored against the same physical reach.
 Every event is scored in one of two strata: 'spread', an active cell within
 SPREAD_REACH_M on the day, or 'ignition', none. The ignition stratum is the
 placement question with no fire nearby to point at.
+
+A static map, the field time-averaged over its supervised days, is the object
+the ignition stratum's skill turns out to consist of; scoring it beside the
+field asks whether the field moves for any reason the events reward.
 """
 from typing import Dict, Optional, Sequence
 
 import numpy as np
 from scipy import sparse
-from scipy.ndimage import binary_dilation
+from scipy.ndimage import maximum_filter
 
 DEFAULT_BUDGETS = (0.01, 0.05, 0.10)
 SPREAD_REACH_M = 2000.0
+PERSIST_KM = 8.0
 TEMPERATURES = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
 PERSIST_W = (0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99)
 PERSIST_R = (1, 2, 3, 5)
 
 
+def cells(km: float, res_m: float) -> int:
+    return max(1, int(round(km * 1000.0 / res_m)))
+
+
 def dilate(active: np.ndarray, r: int) -> np.ndarray:
-    """ (D, H, W) bool: within r cells of an active cell, per day. """
-    k = np.ones((1, 2 * r + 1, 2 * r + 1), bool)
-    return binary_dilation(active.astype(bool), structure=k)
+    # -- (D, H, W) bool, within r cells of an active cell; a separable max
+    #    filter, since a square structuring element is quadratic in r
+    return maximum_filter(active.astype(np.uint8), size=(1, 2 * r + 1, 2 * r + 1),
+                          mode="constant", cval=0) > 0
 
 
 def strata(active: np.ndarray, res_m: float) -> np.ndarray:
-    """ (D, H, W) bool, True where an event would count as spread. """
-    return dilate(active, max(1, int(round(SPREAD_REACH_M / res_m))))
+    # -- (D, H, W) bool, True where an event would count as spread
+    return dilate(active, cells(SPREAD_REACH_M / 1000.0, res_m))
+
+
+def static_map(p: np.ndarray, sup: np.ndarray) -> np.ndarray:
+    # -- (H, W) time average over each cell's supervised days; zero where never
+    wsum, wcnt = (p * sup).sum(0), sup.sum(0)
+    return np.where(wcnt > 0, wsum / np.maximum(wcnt, 1), 0.0)
 
 
 def persistence(clim: np.ndarray, active: np.ndarray, sup: np.ndarray,
@@ -64,10 +81,12 @@ def persistence(clim: np.ndarray, active: np.ndarray, sup: np.ndarray,
     return out.reshape(clim.shape)
 
 
-def fit_persistence(clim: np.ndarray, active: np.ndarray, y: np.ndarray, sup: np.ndarray) -> Dict:
-    """ (w, r) minimizing allocation bits on the given days. """
+def fit_persistence(clim: np.ndarray, active: np.ndarray, y: np.ndarray, sup: np.ndarray,
+                    r: Optional[int] = None) -> Dict:
+    # -- (w, r) minimizing allocation bits on the given days; a given r fixes
+    #    the ring and fits only the share
     best = None
-    for r in PERSIST_R:
+    for r in (PERSIST_R if r is None else (r,)):
         for w in PERSIST_W:
             bits = day_sums(persistence(clim, active, sup, w, r), y, sup, ())["bits"].sum()
             if best is None or bits < best["bits"]:

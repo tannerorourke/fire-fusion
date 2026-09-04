@@ -19,6 +19,21 @@ def brier(p: np.ndarray, y: np.ndarray) -> np.ndarray:
     return (p - y.astype(np.float64)) ** 2
 
 
+def per_day_sums(fields: Dict[str, np.ndarray], mask: np.ndarray) -> Dict[str, np.ndarray]:
+    # -- masked per-day sums, plus the supervised cell count under 'n'
+    m = mask.astype(bool)
+    out = {"n": m.reshape(m.shape[0], -1).sum(axis=1).astype(np.float64)}
+    for k, v in fields.items():
+        out[k] = (v * m).reshape(v.shape[0], -1).sum(axis=1)
+    return out
+
+
+def by_year(day_sums: Dict[str, np.ndarray], years: np.ndarray) -> Dict[int, Dict[str, np.ndarray]]:
+    # -- per-year arrays of per-day sums, the bootstrap's resampling unit
+    return {int(yr): {k: np.asarray(v)[years == yr] for k, v in day_sums.items()}
+            for yr in np.unique(years)}
+
+
 def murphy_decomposition(p: np.ndarray, y: np.ndarray, n_bins: int = 15) -> Dict[str, float]:
     """ Brier = REL - RES + UNC over quantile bins of p. """
     y = y.astype(np.float64)
@@ -39,9 +54,7 @@ def murphy_decomposition(p: np.ndarray, y: np.ndarray, n_bins: int = 15) -> Dict
 
 
 def cox_calibration(z: np.ndarray, y: np.ndarray, max_iter: int = 50) -> Dict[str, float]:
-    """ Fitted logit-space calibration line 'y ~ sigmoid(a*z + b)' by Newton-IRLS,
-        as {'slope': a, 'intercept': b}.
-    """
+    # -- Newton-IRLS fit of the logit-space line y ~ sigmoid(a*z + b)
     y = y.astype(np.float64)
     a, b = 1.0, 0.0
     for _ in range(max_iter):

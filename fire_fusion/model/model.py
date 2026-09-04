@@ -58,6 +58,12 @@ class FireFusionModel(nn.Module):
         dyn_groups  =mp['dyn_groups']
         film_width  =mp['static_film']['width']
         self.modality_dropout = mp['modality_dropout']
+        # -- groups the model never reads: their missing token stands in for
+        #    every sample, in training and at inference alike
+        self.drop_groups = list(mp.get('drop_groups', []))
+        unknown = set(self.drop_groups) - set(dyn_groups)
+        if unknown:
+            raise ValueError(f"drop_groups {sorted(unknown)} are not dynamic groups {list(dyn_groups)}")
 
         self.encoder = SpatialEncoder(dyn_channels, embed_dim, dyn_groups, depth=depth)
         # -- the trailing static channel is the date plane, consumed as a scalar
@@ -97,8 +103,8 @@ class FireFusionModel(nn.Module):
         return self
 
     def train(self, mode: bool = True):
-        """ Set train/eval mode, keeping any frozen backbone or decoder group in eval. """
         super().train(mode)
+        # -- a frozen group stays in eval whatever mode the model takes
         if self._frozen_main:
             for module in self._main_modules:
                 module.eval()
@@ -108,14 +114,17 @@ class FireFusionModel(nn.Module):
         return self
 
     def _drop_masks(self, B: int, device: torch.device):
-        """ Sample a per-group drop mask and a per-sample keep mask for modality dropout,
-            or (None, None) outside training or when `modality_dropout` is 0.
+        """ Per-group drop mask and per-sample static keep mask. `drop_groups` drop
+            every sample in every mode; the rest sample modality dropout in
+            training only. (None, None) when nothing can drop.
         """
-        p = self.modality_dropout
-        if not (self.training and p > 0):
+        p = self.modality_dropout if self.training else 0.0
+        if p <= 0 and not self.drop_groups:
             return None, None
-        drop = {g: torch.rand(B, device=device) < p for g in self.encoder.group_names}
-        keep = (torch.rand(B, device=device) >= p).float()
+        drop = {g: (torch.ones(B, dtype=torch.bool, device=device) if g in self.drop_groups
+                    else torch.rand(B, device=device) < p)
+                for g in self.encoder.group_names}
+        keep = (torch.rand(B, device=device) >= p).float() if p > 0 else None
         return drop, keep
 
     def forward(self, x_dyn: torch.Tensor, x_static: torch.Tensor):

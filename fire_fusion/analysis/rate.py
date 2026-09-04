@@ -20,6 +20,7 @@ smoothed seasonal profile the climatology forecast uses.
 """
 import argparse
 import json
+from pathlib import Path
 from typing import Dict, Sequence, Tuple
 
 import numpy as np
@@ -69,6 +70,7 @@ def daily_frame(dataset: str, split: str, fold: str) -> Dict[str, np.ndarray]:
         "n_sup": n_sup.values.astype(np.float64),
         "events": events.values.astype(np.float64),
         "doy": doy,
+        "dates": days,
         "years": days.astype("datetime64[Y]").astype(int) + 1970,
     }
 
@@ -183,10 +185,14 @@ def pit_histogram(y: np.ndarray, mu: np.ndarray, alpha: float = 0.0,
     return (counts / max(len(y), 1)).tolist()
 
 
-def run(dataset: str, fold: str, l2: float, family: str = "nb") -> Dict:
-    """ Fit the count-rate model on the dataset's train split and score it against
-        observed events and the seasonal reference on every split, returning a
-        report dict.
+def rate_path(dataset: str, fold: str) -> Path:
+    return RATE_DIR / f"rate_{dataset}_{fold}"
+
+
+def run(dataset: str, fold: str, l2: float, family: str = "nb") -> Tuple[Dict, Dict]:
+    """ Fit the count-rate model on the train split and score it on every split.
+        Returns the report and the per-day arrays (dates, lambda, seasonal,
+        events, n_sup) per split, the rate the joint score reads.
     """
     frames = {s: daily_frame(dataset, s, fold) for s in ("train", "eval", "test")}
     xtr, mu, sd = design(frames["train"])
@@ -197,11 +203,14 @@ def run(dataset: str, fold: str, l2: float, family: str = "nb") -> Dict:
     report = {"dataset": dataset, "fold": fold, "l2": l2, "family": family,
               "dispersion_alpha": alpha,
               "n_features": int(xtr.shape[1]), "splits": {}}
+    arrays = {}
     for split, frame in frames.items():
         x, _, _ = design(frame, mu, sd)
         pred = model.predict(x, np.log(frame["n_sup"]))
         ref = seasonal_reference(frames["train"], frame["doy"], frame["n_sup"])
         y = frame["events"]
+        arrays[split] = {"dates": frame["dates"].astype(np.int64), "lambda": pred,
+                         "seasonal": ref, "events": y, "n_sup": frame["n_sup"]}
         d_model, d_ref = poisson_deviance(y, pred), poisson_deviance(y, ref)
         report["splits"][split] = {
             "n_days": int(len(y)),
@@ -216,23 +225,42 @@ def run(dataset: str, fold: str, l2: float, family: str = "nb") -> Dict:
             "pit": pit_histogram(y, pred, alpha),
             "pit_reference": pit_histogram(y, ref, alpha),
         }
+    return report, arrays
+
+
+def write_rate(dataset: str, fold: str, l2: float = 1e-2, family: str = "nb") -> Dict:
+    """ Fit, score, and cache the rate: the report as JSON and the per-day arrays
+        as an npz keyed '<split>_<name>', both under RATE_DIR.
+    """
+    report, arrays = run(dataset, fold, l2, family)
+    RATE_DIR.mkdir(parents=True, exist_ok=True)
+    base = rate_path(dataset, fold)
+    base.with_suffix(".json").write_text(json.dumps(report, indent=1))
+    np.savez_compressed(base.with_suffix(".npz"),
+                        **{f"{s}_{k}": v for s, arr in arrays.items() for k, v in arr.items()})
+    print(f"[rate] wrote {base}.json and .npz")
     return report
 
 
+def daily_rate(dataset: str, fold: str, split: str) -> Dict[str, np.ndarray]:
+    """ One split's per-day rate arrays from the cache, fitting the rate when absent. """
+    path = rate_path(dataset, fold).with_suffix(".npz")
+    if not path.exists():
+        write_rate(dataset, fold)
+    arc = np.load(path)
+    out = {k: arc[f"{split}_{k}"] for k in ("dates", "lambda", "seasonal", "events", "n_sup")}
+    out["dates"] = out["dates"].astype("datetime64[D]")
+    return out
+
+
 def main():
-    """ Parse CLI arguments, fit and score the rate model, and write the report JSON. """
     ap = argparse.ArgumentParser(description="Fit and score the domain ignition rate")
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--fold", default="full")
     ap.add_argument("--l2", type=float, default=1e-2)
     ap.add_argument("--family", default="nb", choices=["nb", "poisson"])
     args = ap.parse_args()
-    report = run(args.dataset, args.fold, args.l2, args.family)
-    RATE_DIR.mkdir(parents=True, exist_ok=True)
-    out = RATE_DIR / f"rate_{args.dataset}_{args.fold}.json"
-    out.write_text(json.dumps(report, indent=1))
-    print(json.dumps(report, indent=1))
-    print(f"[rate] wrote {out}")
+    print(json.dumps(write_rate(args.dataset, args.fold, args.l2, args.family), indent=1))
 
 
 if __name__ == "__main__":
