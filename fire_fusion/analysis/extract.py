@@ -21,7 +21,7 @@ stage accepts as an experiment name:
   wind:swap    the two wind components exchanged
 
   python -m fire_fusion.analysis.extract --experiment wa2000-s1 --split test
-  python -m fire_fusion.analysis.extract --experiment wa4000-s1 --intervene met:year
+  python -m fire_fusion.analysis.extract --experiment wa4000-d192-s1 --intervene met:year
 """
 import argparse
 import hashlib

@@ -10,10 +10,10 @@ writes a single JSON report under REPORTS_DIR. An intervention archive
 ('<exp>@met_year') is an experiment name to every stage.
 
   python -m fire_fusion.analysis.score native --experiments wa2000-s1 --split test
-  python -m fire_fusion.analysis.score joint --experiments wa4000-s1 --split test
-  python -m fire_fusion.analysis.score static --experiments wa4000-s1 --coarse-res 4000 --static-from train
-  python -m fire_fusion.analysis.score pooled --experiments wa2000-s1 wa1000-s1 cascades500-s1
-  python -m fire_fusion.analysis.score allocation --experiments cascades500-optimal --footprint self
+  python -m fire_fusion.analysis.score joint --experiments wa4000-d192-s1 --split test
+  python -m fire_fusion.analysis.score static --experiments wa4000-d192-s1 --coarse-res 4000 --static-from train
+  python -m fire_fusion.analysis.score pooled --experiments wa2000-s1 wa1000-s1 cascades500-d192-s1
+  python -m fire_fusion.analysis.score allocation --experiments cascades500-d192-s1 --footprint self
 """
 import argparse
 import json
