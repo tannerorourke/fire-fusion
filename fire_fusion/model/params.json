@@ -44,7 +44,8 @@
       "alpha_cause": "auto",
       "select_by": "val_alloc",
       "fold": "fold3",
-      "alpha_alloc": 1.0
+      "alpha_alloc": 1.0,
+      "accum_steps": 2
     }
   },
   "wa4000-d192-s1": {
@@ -79,8 +80,8 @@
       "batch_size": 4,
       "epochs": [
         5,
-        32,
-        10
+        20,
+        6
       ],
       "min_lr": 1e-06,
       "base_lr": 0.001,
@@ -92,7 +93,8 @@
       "alpha_cause": "auto",
       "select_by": "val_alloc",
       "fold": "fold3",
-      "alpha_alloc": 1.0
+      "alpha_alloc": 1.0,
+      "accum_steps": 2
     }
   },
   "wa4000-d192-s2": {
@@ -127,8 +129,8 @@
       "batch_size": 4,
       "epochs": [
         5,
-        32,
-        10
+        20,
+        6
       ],
       "min_lr": 1e-06,
       "base_lr": 0.001,
@@ -140,7 +142,8 @@
       "alpha_cause": "auto",
       "select_by": "val_alloc",
       "fold": "fold3",
-      "alpha_alloc": 1.0
+      "alpha_alloc": 1.0,
+      "accum_steps": 2
     }
   },
   "wa4000-static-d192-s1": {
@@ -170,8 +173,11 @@
       },
       "modality_dropout": 0.0,
       "drop_groups": [
-        "MET",
-        "STATE"
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "LIGHTNING",
+        "VEG"
       ]
     },
     "training": {
@@ -197,7 +203,7 @@
       "window_size": 1
     }
   },
-  "wa4000-nomet-d192-s1": {
+  "wa4000-static+WEATHER-d192-s1": {
     "dataset": "wa4000",
     "model": {
       "embed_dim": 192,
@@ -224,7 +230,176 @@
       },
       "modality_dropout": 0.15,
       "drop_groups": [
-        "MET"
+        "WIND",
+        "FIRE",
+        "LIGHTNING",
+        "VEG"
+      ]
+    },
+    "training": {
+      "seed": 1,
+      "batch_size": 4,
+      "epochs": [
+        5,
+        20,
+        6
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold3",
+      "alpha_alloc": 1.0,
+      "accum_steps": 2
+    }
+  },
+  "wa4000-static+VEG-d192-s1": {
+    "dataset": "wa4000",
+    "model": {
+      "embed_dim": 192,
+      "encoder_depth": 1,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.1
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1,
+        "chunk_size": 4096
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.15,
+      "drop_groups": [
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "LIGHTNING"
+      ]
+    },
+    "training": {
+      "seed": 1,
+      "batch_size": 4,
+      "epochs": [
+        5,
+        20,
+        6
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold3",
+      "alpha_alloc": 1.0,
+      "accum_steps": 2
+    }
+  },
+  "wa4000-static+LIGHTNING-d192-s1": {
+    "dataset": "wa4000",
+    "model": {
+      "embed_dim": 192,
+      "encoder_depth": 1,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.1
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1,
+        "chunk_size": 4096
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.15,
+      "drop_groups": [
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "VEG"
+      ]
+    },
+    "training": {
+      "seed": 1,
+      "batch_size": 4,
+      "epochs": [
+        5,
+        20,
+        6
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold3",
+      "alpha_alloc": 1.0,
+      "accum_steps": 2
+    }
+  },
+  "wa4000-static-fold1-d192-s1": {
+    "dataset": "wa4000",
+    "model": {
+      "embed_dim": 192,
+      "encoder_depth": 1,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.1
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1,
+        "chunk_size": 4096
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.0,
+      "drop_groups": [
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "LIGHTNING",
+        "VEG"
       ]
     },
     "training": {
@@ -244,11 +419,13 @@
       "alpha_ign": 0.2,
       "alpha_cause": "auto",
       "select_by": "val_alloc",
-      "fold": "fold3",
-      "alpha_alloc": 1.0
+      "fold": "fold1",
+      "alpha_alloc": 1.0,
+      "accum_steps": 2,
+      "window_size": 1
     }
   },
-  "wa4000-hp-base-d192-s1": {
+  "wa4000-static-fold2-d192-s1": {
     "dataset": "wa4000",
     "model": {
       "embed_dim": 192,
@@ -273,15 +450,22 @@
       "static_film": {
         "width": 32
       },
-      "modality_dropout": 0.15
+      "modality_dropout": 0.0,
+      "drop_groups": [
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "LIGHTNING",
+        "VEG"
+      ]
     },
     "training": {
       "seed": 1,
       "batch_size": 4,
       "epochs": [
         5,
-        20,
-        6
+        32,
+        10
       ],
       "min_lr": 1e-06,
       "base_lr": 0.001,
@@ -292,352 +476,10 @@
       "alpha_ign": 0.2,
       "alpha_cause": "auto",
       "select_by": "val_alloc",
-      "fold": "fold3",
+      "fold": "fold2",
       "alpha_alloc": 1.0,
-      "accum_steps": 2
-    }
-  },
-  "wa4000-hp-base-d192-s2": {
-    "dataset": "wa4000",
-    "model": {
-      "embed_dim": 192,
-      "encoder_depth": 1,
-      "win_spatial_mixing": {
-        "num_heads": 4,
-        "window_size": 2,
-        "dropout": 0.1
-      },
-      "channel_mixing": {
-        "num_heads": 4,
-        "d_model": 32,
-        "mlp_ratio": 2.0,
-        "dropout": 0.1,
-        "chunk_size": 4096
-      },
-      "temporal_mixing": {
-        "num_heads": 4,
-        "mlp_ratio": 2.0,
-        "dropout": 0.1
-      },
-      "static_film": {
-        "width": 32
-      },
-      "modality_dropout": 0.15
-    },
-    "training": {
-      "seed": 2,
-      "batch_size": 4,
-      "epochs": [
-        5,
-        20,
-        6
-      ],
-      "min_lr": 1e-06,
-      "base_lr": 0.001,
-      "weight_decay": 0.0001,
-      "grad_clip": 1.0,
-      "crop_size": null,
-      "neg_keep_rate": 0.05,
-      "alpha_ign": 0.2,
-      "alpha_cause": "auto",
-      "select_by": "val_alloc",
-      "fold": "fold3",
-      "alpha_alloc": 1.0,
-      "accum_steps": 2
-    }
-  },
-  "wa4000-hp-lr3e-4-d192-s1": {
-    "dataset": "wa4000",
-    "model": {
-      "embed_dim": 192,
-      "encoder_depth": 1,
-      "win_spatial_mixing": {
-        "num_heads": 4,
-        "window_size": 2,
-        "dropout": 0.1
-      },
-      "channel_mixing": {
-        "num_heads": 4,
-        "d_model": 32,
-        "mlp_ratio": 2.0,
-        "dropout": 0.1,
-        "chunk_size": 4096
-      },
-      "temporal_mixing": {
-        "num_heads": 4,
-        "mlp_ratio": 2.0,
-        "dropout": 0.1
-      },
-      "static_film": {
-        "width": 32
-      },
-      "modality_dropout": 0.15
-    },
-    "training": {
-      "seed": 1,
-      "batch_size": 4,
-      "epochs": [
-        5,
-        20,
-        6
-      ],
-      "min_lr": 1e-06,
-      "base_lr": 0.0003,
-      "weight_decay": 0.0001,
-      "grad_clip": 1.0,
-      "crop_size": null,
-      "neg_keep_rate": 0.05,
-      "alpha_ign": 0.2,
-      "alpha_cause": "auto",
-      "select_by": "val_alloc",
-      "fold": "fold3",
-      "alpha_alloc": 1.0,
-      "accum_steps": 2
-    }
-  },
-  "wa4000-hp-wd1e-2-d192-s1": {
-    "dataset": "wa4000",
-    "model": {
-      "embed_dim": 192,
-      "encoder_depth": 1,
-      "win_spatial_mixing": {
-        "num_heads": 4,
-        "window_size": 2,
-        "dropout": 0.1
-      },
-      "channel_mixing": {
-        "num_heads": 4,
-        "d_model": 32,
-        "mlp_ratio": 2.0,
-        "dropout": 0.1,
-        "chunk_size": 4096
-      },
-      "temporal_mixing": {
-        "num_heads": 4,
-        "mlp_ratio": 2.0,
-        "dropout": 0.1
-      },
-      "static_film": {
-        "width": 32
-      },
-      "modality_dropout": 0.15
-    },
-    "training": {
-      "seed": 1,
-      "batch_size": 4,
-      "epochs": [
-        5,
-        20,
-        6
-      ],
-      "min_lr": 1e-06,
-      "base_lr": 0.001,
-      "weight_decay": 0.01,
-      "grad_clip": 1.0,
-      "crop_size": null,
-      "neg_keep_rate": 0.05,
-      "alpha_ign": 0.2,
-      "alpha_cause": "auto",
-      "select_by": "val_alloc",
-      "fold": "fold3",
-      "alpha_alloc": 1.0,
-      "accum_steps": 2
-    }
-  },
-  "wa4000-hp-nomod-d192-s1": {
-    "dataset": "wa4000",
-    "model": {
-      "embed_dim": 192,
-      "encoder_depth": 1,
-      "win_spatial_mixing": {
-        "num_heads": 4,
-        "window_size": 2,
-        "dropout": 0.1
-      },
-      "channel_mixing": {
-        "num_heads": 4,
-        "d_model": 32,
-        "mlp_ratio": 2.0,
-        "dropout": 0.1,
-        "chunk_size": 4096
-      },
-      "temporal_mixing": {
-        "num_heads": 4,
-        "mlp_ratio": 2.0,
-        "dropout": 0.1
-      },
-      "static_film": {
-        "width": 32
-      },
-      "modality_dropout": 0.0
-    },
-    "training": {
-      "seed": 1,
-      "batch_size": 4,
-      "epochs": [
-        5,
-        20,
-        6
-      ],
-      "min_lr": 1e-06,
-      "base_lr": 0.001,
-      "weight_decay": 0.0001,
-      "grad_clip": 1.0,
-      "crop_size": null,
-      "neg_keep_rate": 0.05,
-      "alpha_ign": 0.2,
-      "alpha_cause": "auto",
-      "select_by": "val_alloc",
-      "fold": "fold3",
-      "alpha_alloc": 1.0,
-      "accum_steps": 2
-    }
-  },
-  "wa4000-hp-neg0.2-d192-s1": {
-    "dataset": "wa4000",
-    "model": {
-      "embed_dim": 192,
-      "encoder_depth": 1,
-      "win_spatial_mixing": {
-        "num_heads": 4,
-        "window_size": 2,
-        "dropout": 0.1
-      },
-      "channel_mixing": {
-        "num_heads": 4,
-        "d_model": 32,
-        "mlp_ratio": 2.0,
-        "dropout": 0.1,
-        "chunk_size": 4096
-      },
-      "temporal_mixing": {
-        "num_heads": 4,
-        "mlp_ratio": 2.0,
-        "dropout": 0.1
-      },
-      "static_film": {
-        "width": 32
-      },
-      "modality_dropout": 0.15
-    },
-    "training": {
-      "seed": 1,
-      "batch_size": 4,
-      "epochs": [
-        5,
-        20,
-        6
-      ],
-      "min_lr": 1e-06,
-      "base_lr": 0.001,
-      "weight_decay": 0.0001,
-      "grad_clip": 1.0,
-      "crop_size": null,
-      "neg_keep_rate": 0.2,
-      "alpha_ign": 0.2,
-      "alpha_cause": "auto",
-      "select_by": "val_alloc",
-      "fold": "fold3",
-      "alpha_alloc": 1.0,
-      "accum_steps": 2
-    }
-  },
-  "wa4000-hp-nodrop-d192-s1": {
-    "dataset": "wa4000",
-    "model": {
-      "embed_dim": 192,
-      "encoder_depth": 1,
-      "win_spatial_mixing": {
-        "num_heads": 4,
-        "window_size": 2,
-        "dropout": 0.0
-      },
-      "channel_mixing": {
-        "num_heads": 4,
-        "d_model": 32,
-        "mlp_ratio": 2.0,
-        "dropout": 0.0,
-        "chunk_size": 4096
-      },
-      "temporal_mixing": {
-        "num_heads": 4,
-        "mlp_ratio": 2.0,
-        "dropout": 0.0
-      },
-      "static_film": {
-        "width": 32
-      },
-      "modality_dropout": 0.15
-    },
-    "training": {
-      "seed": 1,
-      "batch_size": 4,
-      "epochs": [
-        5,
-        20,
-        6
-      ],
-      "min_lr": 1e-06,
-      "base_lr": 0.001,
-      "weight_decay": 0.0001,
-      "grad_clip": 1.0,
-      "crop_size": null,
-      "neg_keep_rate": 0.05,
-      "alpha_ign": 0.2,
-      "alpha_cause": "auto",
-      "select_by": "val_alloc",
-      "fold": "fold3",
-      "alpha_alloc": 1.0,
-      "accum_steps": 2
-    }
-  },
-  "wa4000-hp-mlp4-d192-s1": {
-    "dataset": "wa4000",
-    "model": {
-      "embed_dim": 192,
-      "encoder_depth": 1,
-      "win_spatial_mixing": {
-        "num_heads": 4,
-        "window_size": 2,
-        "dropout": 0.1
-      },
-      "channel_mixing": {
-        "num_heads": 4,
-        "d_model": 32,
-        "mlp_ratio": 4.0,
-        "dropout": 0.1,
-        "chunk_size": 4096
-      },
-      "temporal_mixing": {
-        "num_heads": 4,
-        "mlp_ratio": 4.0,
-        "dropout": 0.1
-      },
-      "static_film": {
-        "width": 32
-      },
-      "modality_dropout": 0.15
-    },
-    "training": {
-      "seed": 1,
-      "batch_size": 4,
-      "epochs": [
-        5,
-        20,
-        6
-      ],
-      "min_lr": 1e-06,
-      "base_lr": 0.001,
-      "weight_decay": 0.0001,
-      "grad_clip": 1.0,
-      "crop_size": null,
-      "neg_keep_rate": 0.05,
-      "alpha_ign": 0.2,
-      "alpha_cause": "auto",
-      "select_by": "val_alloc",
-      "fold": "fold3",
-      "alpha_alloc": 1.0,
-      "accum_steps": 2
+      "accum_steps": 2,
+      "window_size": 1
     }
   },
   "wa2000-s1": {
@@ -691,57 +533,6 @@
       "alpha_alloc": 1.0
     }
   },
-  "wa2000-s2": {
-    "dataset": "wa2000",
-    "model": {
-      "embed_dim": 192,
-      "encoder_depth": 1,
-      "win_spatial_mixing": {
-        "num_heads": 4,
-        "window_size": 2,
-        "dropout": 0.1
-      },
-      "channel_mixing": {
-        "num_heads": 4,
-        "d_model": 32,
-        "mlp_ratio": 2.0,
-        "dropout": 0.1,
-        "chunk_size": 32768
-      },
-      "temporal_mixing": {
-        "num_heads": 4,
-        "mlp_ratio": 2.0,
-        "dropout": 0.1
-      },
-      "static_film": {
-        "width": 32
-      },
-      "modality_dropout": 0.15
-    },
-    "training": {
-      "seed": 2,
-      "batch_size": 4,
-      "accum_steps": 2,
-      "max_workers": 20,
-      "compile": false,
-      "epochs": [
-        5,
-        20,
-        6
-      ],
-      "min_lr": 1e-06,
-      "base_lr": 0.001,
-      "weight_decay": 0.0001,
-      "grad_clip": 1.0,
-      "crop_size": null,
-      "neg_keep_rate": 0.05,
-      "alpha_ign": 0.2,
-      "alpha_cause": "auto",
-      "select_by": "val_alloc",
-      "fold": "fold3",
-      "alpha_alloc": 1.0
-    }
-  },
   "wa2000-static": {
     "dataset": "wa2000",
     "model": {
@@ -769,8 +560,11 @@
       },
       "modality_dropout": 0.0,
       "drop_groups": [
-        "MET",
-        "STATE"
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "LIGHTNING",
+        "VEG"
       ]
     },
     "training": {
@@ -798,11 +592,11 @@
       "window_size": 1
     }
   },
-  "wa1000-s1": {
-    "dataset": "wa1000",
+  "wa2000-static-fold1": {
+    "dataset": "wa2000",
     "model": {
       "embed_dim": 192,
-      "encoder_depth": 2,
+      "encoder_depth": 1,
       "win_spatial_mixing": {
         "num_heads": 4,
         "window_size": 2,
@@ -823,18 +617,25 @@
       "static_film": {
         "width": 32
       },
-      "modality_dropout": 0.15
+      "modality_dropout": 0.0,
+      "drop_groups": [
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "LIGHTNING",
+        "VEG"
+      ]
     },
     "training": {
       "seed": 1,
-      "batch_size": 1,
-      "accum_steps": 8,
+      "batch_size": 4,
+      "accum_steps": 2,
       "max_workers": 20,
       "compile": false,
       "epochs": [
         5,
-        20,
-        6
+        32,
+        10
       ],
       "min_lr": 1e-06,
       "base_lr": 0.001,
@@ -845,15 +646,16 @@
       "alpha_ign": 0.2,
       "alpha_cause": "auto",
       "select_by": "val_alloc",
-      "fold": "fold3",
-      "alpha_alloc": 1.0
+      "fold": "fold1",
+      "alpha_alloc": 1.0,
+      "window_size": 1
     }
   },
-  "wa1000-s2": {
-    "dataset": "wa1000",
+  "wa2000-static-fold2": {
+    "dataset": "wa2000",
     "model": {
       "embed_dim": 192,
-      "encoder_depth": 2,
+      "encoder_depth": 1,
       "win_spatial_mixing": {
         "num_heads": 4,
         "window_size": 2,
@@ -874,18 +676,25 @@
       "static_film": {
         "width": 32
       },
-      "modality_dropout": 0.15
+      "modality_dropout": 0.0,
+      "drop_groups": [
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "LIGHTNING",
+        "VEG"
+      ]
     },
     "training": {
-      "seed": 2,
-      "batch_size": 1,
-      "accum_steps": 8,
+      "seed": 1,
+      "batch_size": 4,
+      "accum_steps": 2,
       "max_workers": 20,
       "compile": false,
       "epochs": [
         5,
-        20,
-        6
+        32,
+        10
       ],
       "min_lr": 1e-06,
       "base_lr": 0.001,
@@ -896,8 +705,9 @@
       "alpha_ign": 0.2,
       "alpha_cause": "auto",
       "select_by": "val_alloc",
-      "fold": "fold3",
-      "alpha_alloc": 1.0
+      "fold": "fold2",
+      "alpha_alloc": 1.0,
+      "window_size": 1
     }
   },
   "wa1000-static": {
@@ -927,8 +737,11 @@
       },
       "modality_dropout": 0.0,
       "drop_groups": [
-        "MET",
-        "STATE"
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "LIGHTNING",
+        "VEG"
       ]
     },
     "training": {
@@ -952,6 +765,124 @@
       "alpha_cause": "auto",
       "select_by": "val_alloc",
       "fold": "fold3",
+      "alpha_alloc": 1.0,
+      "window_size": 1
+    }
+  },
+  "wa1000-static-fold1": {
+    "dataset": "wa1000",
+    "model": {
+      "embed_dim": 192,
+      "encoder_depth": 2,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.1
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1,
+        "chunk_size": 32768
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.0,
+      "drop_groups": [
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "LIGHTNING",
+        "VEG"
+      ]
+    },
+    "training": {
+      "seed": 1,
+      "batch_size": 1,
+      "accum_steps": 8,
+      "max_workers": 20,
+      "compile": false,
+      "epochs": [
+        5,
+        32,
+        10
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold1",
+      "alpha_alloc": 1.0,
+      "window_size": 1
+    }
+  },
+  "wa1000-static-fold2": {
+    "dataset": "wa1000",
+    "model": {
+      "embed_dim": 192,
+      "encoder_depth": 2,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.1
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1,
+        "chunk_size": 32768
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.0,
+      "drop_groups": [
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "LIGHTNING",
+        "VEG"
+      ]
+    },
+    "training": {
+      "seed": 1,
+      "batch_size": 1,
+      "accum_steps": 8,
+      "max_workers": 20,
+      "compile": false,
+      "epochs": [
+        5,
+        32,
+        10
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold2",
       "alpha_alloc": 1.0,
       "window_size": 1
     }
@@ -1262,6 +1193,108 @@
       "alpha_alloc": 1.0
     }
   },
+  "cascades500-hp-nomod-d192-s1": {
+    "dataset": "cascades500",
+    "model": {
+      "embed_dim": 192,
+      "encoder_depth": 3,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.1
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1,
+        "chunk_size": 32768
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.0
+    },
+    "training": {
+      "seed": 1,
+      "batch_size": 1,
+      "accum_steps": 8,
+      "max_workers": 20,
+      "compile": false,
+      "epochs": [
+        5,
+        20,
+        6
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold3",
+      "alpha_alloc": 1.0
+    }
+  },
+  "cascades500-hp-nodrop-d192-s1": {
+    "dataset": "cascades500",
+    "model": {
+      "embed_dim": 192,
+      "encoder_depth": 3,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.0
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.0,
+        "chunk_size": 32768
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.0
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.15
+    },
+    "training": {
+      "seed": 1,
+      "batch_size": 1,
+      "accum_steps": 8,
+      "max_workers": 20,
+      "compile": false,
+      "epochs": [
+        5,
+        20,
+        6
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold3",
+      "alpha_alloc": 1.0
+    }
+  },
   "cascades500-static-d192-s1": {
     "dataset": "cascades500",
     "model": {
@@ -1289,8 +1322,11 @@
       },
       "modality_dropout": 0.0,
       "drop_groups": [
-        "MET",
-        "STATE"
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "LIGHTNING",
+        "VEG"
       ]
     },
     "training": {
@@ -1316,6 +1352,351 @@
       "fold": "fold3",
       "alpha_alloc": 1.0,
       "window_size": 1
+    }
+  },
+  "cascades500-static-fold1-d192-s1": {
+    "dataset": "cascades500",
+    "model": {
+      "embed_dim": 192,
+      "encoder_depth": 3,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.1
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1,
+        "chunk_size": 32768
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.0,
+      "drop_groups": [
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "LIGHTNING",
+        "VEG"
+      ]
+    },
+    "training": {
+      "seed": 1,
+      "batch_size": 1,
+      "accum_steps": 8,
+      "max_workers": 20,
+      "compile": false,
+      "epochs": [
+        5,
+        32,
+        10
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold1",
+      "alpha_alloc": 1.0,
+      "window_size": 1
+    }
+  },
+  "cascades500-static-fold2-d192-s1": {
+    "dataset": "cascades500",
+    "model": {
+      "embed_dim": 192,
+      "encoder_depth": 3,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.1
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1,
+        "chunk_size": 32768
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.0,
+      "drop_groups": [
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "LIGHTNING",
+        "VEG"
+      ]
+    },
+    "training": {
+      "seed": 1,
+      "batch_size": 1,
+      "accum_steps": 8,
+      "max_workers": 20,
+      "compile": false,
+      "epochs": [
+        5,
+        32,
+        10
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold2",
+      "alpha_alloc": 1.0,
+      "window_size": 1
+    }
+  },
+  "cascades500-static+VEG-d192-s1": {
+    "dataset": "cascades500",
+    "model": {
+      "embed_dim": 192,
+      "encoder_depth": 3,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.1
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1,
+        "chunk_size": 32768
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.15,
+      "drop_groups": [
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "LIGHTNING"
+      ]
+    },
+    "training": {
+      "seed": 1,
+      "batch_size": 1,
+      "accum_steps": 8,
+      "max_workers": 20,
+      "compile": false,
+      "epochs": [
+        5,
+        20,
+        6
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold3",
+      "alpha_alloc": 1.0
+    }
+  },
+  "cascades500-static+LIGHTNING-d192-s1": {
+    "dataset": "cascades500",
+    "model": {
+      "embed_dim": 192,
+      "encoder_depth": 3,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.1
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1,
+        "chunk_size": 32768
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.15,
+      "drop_groups": [
+        "WEATHER",
+        "WIND",
+        "FIRE",
+        "VEG"
+      ]
+    },
+    "training": {
+      "seed": 1,
+      "batch_size": 1,
+      "accum_steps": 8,
+      "max_workers": 20,
+      "compile": false,
+      "epochs": [
+        5,
+        20,
+        6
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold3",
+      "alpha_alloc": 1.0
+    }
+  },
+  "cascades500-static+FIRE-d192-s1": {
+    "dataset": "cascades500",
+    "model": {
+      "embed_dim": 192,
+      "encoder_depth": 3,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.1
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1,
+        "chunk_size": 32768
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.15,
+      "drop_groups": [
+        "WEATHER",
+        "WIND",
+        "LIGHTNING",
+        "VEG"
+      ]
+    },
+    "training": {
+      "seed": 1,
+      "batch_size": 1,
+      "accum_steps": 8,
+      "max_workers": 20,
+      "compile": false,
+      "epochs": [
+        5,
+        20,
+        6
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold3",
+      "alpha_alloc": 1.0
+    }
+  },
+  "cascades500-static+WIND+FIRE-d192-s1": {
+    "dataset": "cascades500",
+    "model": {
+      "embed_dim": 192,
+      "encoder_depth": 3,
+      "win_spatial_mixing": {
+        "num_heads": 4,
+        "window_size": 2,
+        "dropout": 0.1
+      },
+      "channel_mixing": {
+        "num_heads": 4,
+        "d_model": 32,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1,
+        "chunk_size": 32768
+      },
+      "temporal_mixing": {
+        "num_heads": 4,
+        "mlp_ratio": 2.0,
+        "dropout": 0.1
+      },
+      "static_film": {
+        "width": 32
+      },
+      "modality_dropout": 0.15,
+      "drop_groups": [
+        "WEATHER",
+        "LIGHTNING",
+        "VEG"
+      ]
+    },
+    "training": {
+      "seed": 1,
+      "batch_size": 1,
+      "accum_steps": 8,
+      "max_workers": 20,
+      "compile": false,
+      "epochs": [
+        5,
+        20,
+        6
+      ],
+      "min_lr": 1e-06,
+      "base_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "crop_size": null,
+      "neg_keep_rate": 0.05,
+      "alpha_ign": 0.2,
+      "alpha_cause": "auto",
+      "select_by": "val_alloc",
+      "fold": "fold3",
+      "alpha_alloc": 1.0
     }
   },
   "cascades500-fold1-d128-s1": {

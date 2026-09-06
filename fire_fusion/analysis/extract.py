@@ -12,16 +12,17 @@ of grid cells.
 
 An intervention re-runs the same checkpoint with one input group interfered
 with and writes <experiment>@<group>_<mode>_<split>.npz, which every scoring
-stage accepts as an experiment name:
+stage accepts as an experiment name. GROUP is a dynamic group, lower-cased,
+or 'wind' for the two direction components alone:
 
-  met:year     MET from the window one season earlier; season and geography
-               survive, the year's actual weather is wrong
-  met:mean     MET replaced by its per-channel mean over the split
-  state:year   the same shift on STATE, which carries the active-fire signal
-  wind:swap    the two wind components exchanged
+  weather:year   WEATHER from the window one season earlier; season and
+                 geography survive, the year's actual weather is wrong
+  weather:mean   WEATHER replaced by its per-channel mean over the split
+  fire:year      the same shift on FIRE, which carries the active-fire signal
+  wind:swap      the two wind direction components exchanged
 
   python -m fire_fusion.analysis.extract --experiment wa2000-s1 --split test
-  python -m fire_fusion.analysis.extract --experiment wa4000-d192-s1 --intervene met:year
+  python -m fire_fusion.analysis.extract --experiment wa4000-d192-s1 --intervene weather:year
 """
 import argparse
 import hashlib
@@ -51,18 +52,27 @@ def load_experiment(experiment: str) -> dict:
 class Intervened(Dataset):
     """ The split's windows with one dynamic group interfered with. Year modes
         read the window `shift` positions earlier, one season at the stride;
-        mean mode holds the group at its split mean; swap exchanges two channels.
+        mean mode holds the group at its split mean; swap exchanges the two
+        channels of a pair.
     """
+    MODES = ("year", "mean", "swap")
+
     def __init__(self, ds, group: str, mode: str):
         self.ds, self.mode = ds, mode
+        if mode not in self.MODES:
+            raise SystemExit(f"intervention mode '{mode}' is not one of {self.MODES}")
         n_years = len(np.unique(np.asarray(ds.ds.indexes["time"], dtype="datetime64[Y]")))
         self.shift = max(1, len(ds) // n_years)
         if group == "wind":
             pos = {c: i for i, c in enumerate(ds._dyn_idx)}
             names = ds.feature_names
             self.idx = [pos[names.index("wind_dir_ew")], pos[names.index("wind_dir_ns")]]
-        else:
+        elif group.upper() in ds.dyn_groups:
             self.idx = ds.dyn_groups[group.upper()]
+        else:
+            raise SystemExit(f"'{group}' is neither 'wind' nor a dynamic group {list(ds.dyn_groups)}")
+        if mode == "swap" and len(self.idx) != 2:
+            raise SystemExit("swap exchanges exactly two channels")
         if mode == "mean":
             # -- mean over the windows' days, each window weighted alike
             day = ds.X.isel(channel=[ds._dyn_idx[i] for i in self.idx]).mean(("y", "x")).values
@@ -206,9 +216,9 @@ def main():
     ap.add_argument("--dataset", default=None)
     ap.add_argument("--checkpoint", default=None)
     ap.add_argument("--batch-size", type=int, default=1)
-    ap.add_argument("--intervene", default=None,
-                    choices=["met:year", "met:mean", "state:year", "wind:swap"],
-                    help="re-run with one input group interfered with; archive named <exp>@<group>_<mode>")
+    ap.add_argument("--intervene", default=None, metavar="GROUP:MODE",
+                    help="re-run with one input group interfered with (a dynamic group or "
+                         "'wind'; year, mean or swap); archive named <exp>@<group>_<mode>")
     args = ap.parse_args()
     extract(args.experiment, args.split, args.dataset, args.checkpoint, args.batch_size, args.intervene)
 

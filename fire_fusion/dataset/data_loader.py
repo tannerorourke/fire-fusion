@@ -1,9 +1,9 @@
 """
 Splits store one pre-stacked (time, channel, y, x) float32 array "X" plus
 per-day label and mask arrays. A sample splits X's channel axis into a
-dynamic block (met + state channels, read across the full window) and a
-static block (terrain, infrastructure, and vegetation-context channels plus
-a day-of-year scalar plane, read once at the window's final day). 
+dynamic block (the DYNAMIC_GROUPS channels, read across the full window) and a
+static block (the STATIC_GROUPS channels plus a day-of-year scalar plane, read
+once at the window's final day).
 Channel grouping comes from feature_config.channel_group_indices; window, crop.
 Halo bookkeeping comes from the dataset's manifest.json.
 """
@@ -18,7 +18,7 @@ from torch.utils.data import Dataset, DataLoader, get_worker_info
 import xarray as xr
 
 from ..config.dataset_config import DatasetConfig, get_dataset_config
-from ..config.feature_config import channel_group_indices
+from ..config.feature_config import DYNAMIC_GROUPS, STATIC_GROUPS, channel_group_indices
 
 
 # -- Utility functions ------------------------------------------------------
@@ -59,10 +59,9 @@ def _seed_worker(worker_id: int) -> None:
 # --------------------------------------------------------------------------
 class FireDataset(Dataset):
     """ Yields spatiotemporal windows as ((x_dyn, x_static), labels, masks):
-        - x_dyn: (T, 26, H, W) float32, met + state channels across the window
-        - x_static: (13, H, W) float32, terrain/infrastructure/vegetation-context
-          channels at the window's final day, with a day-of-year scalar plane
-          appended last
+        - x_dyn: (T, C_dyn, H, W) float32, the DYNAMIC_GROUPS channels across the window
+        - x_static: (C_static, H, W) float32, the STATIC_GROUPS channels at the
+          window's final day, with a day-of-year scalar plane appended last
         - labels/masks: (H, W) at the window's final day (the prediction target
           is a fresh ignition within the forward horizon of that day)
     """
@@ -90,18 +89,19 @@ class FireDataset(Dataset):
         self.feature_names = list(self.manifest["channels"])
 
         groups = channel_group_indices(self.feature_names)
-        self._dyn_idx = sorted(groups["MET"] + groups["STATE"])
-        self._static_idx = sorted(groups["STATIC"] + groups["QUASI_STATIC"])
+        self._dyn_idx = sorted(i for g in DYNAMIC_GROUPS for i in groups[g])
+        self._static_idx = sorted(i for g in STATIC_GROUPS for i in groups[g])
         scalar_idx = groups["SCALAR"]
         assert len(scalar_idx) == 1, f"SCALAR group must be a single channel, got {scalar_idx}"
         self._scalar_idx = scalar_idx[0]
         self.dyn_channels = len(self._dyn_idx)
         self.static_channels = len(self._static_idx) + 1  # + the appended scalar plane
 
-        # -- positions within x_dyn's channel axis of MET/STATE branches
+        # -- positions within x_dyn's channel axis of each stem's channels, in
+        #    DYNAMIC_GROUPS order, which fixes the stem concatenation order
         dyn_pos = {c: i for i, c in enumerate(self._dyn_idx)}
         self.dyn_groups = {
-            name: sorted(dyn_pos[c] for c in groups[name]) for name in ("MET", "STATE")
+            name: sorted(dyn_pos[c] for c in groups[name]) for name in DYNAMIC_GROUPS
         }
 
         self.label_names = list(self.manifest["labels"])
@@ -133,8 +133,11 @@ class FireDataset(Dataset):
         self.window_size = window_size
         self.window_stride = window_stride
         self.n_timesteps = self.ds.sizes["time"]
+        # -- the first start is offset so every target day (start + window - 1)
+        #    falls on the same stride lattice whatever the window: archives of
+        #    a 1-day and a 10-day arm then share days and can be paired
         starts = np.arange(
-            0, max(self.n_timesteps - window_size + 1, 0),
+            (1 - window_size) % window_stride, max(self.n_timesteps - window_size + 1, 0),
             window_stride,
             dtype=int,
         )
@@ -198,12 +201,12 @@ class FireDataset(Dataset):
             xsel = slice(x0, x0 + self.read_size)
             keep = (self._keep_span(y0, H), self._keep_span(x0, W))
 
-        # (T, 26, H, W) float32
+        # (T, C_dyn, H, W) float32
         x_dyn = torch.from_numpy(np.ascontiguousarray(
             self.X.isel(time=slice(t0, t1), channel=self._dyn_idx, y=ysel, x=xsel).values
         ))
 
-        # (13, H, W) float32
+        # (C_static, H, W) float32
         static_idx = self._static_idx + [self._scalar_idx]  # scalar plane last
         x_static = torch.from_numpy(np.ascontiguousarray(
             self.X.isel(time=last, channel=static_idx, y=ysel, x=xsel).values
