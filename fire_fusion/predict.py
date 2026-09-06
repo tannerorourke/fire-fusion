@@ -21,7 +21,7 @@ import torch
 
 from .analysis.archive import last_day
 from .config.dataset_config import get_dataset_config
-from .config.feature_config import channel_group_indices
+from .config.feature_config import DYNAMIC_GROUPS, STATIC_GROUPS, channel_group_indices
 from .config.path_config import MODEL_DIR, PLOTS_DIR
 from .dataset.data_loader import init_data_loader
 from .model.model import FireFusionModel
@@ -95,14 +95,14 @@ def load_predictor(
 
     # -- Derive the model's static and dynamic channel counts
     groups = channel_group_indices(list(manifest["channels"]))
-    dyn_idx = sorted(groups["MET"] + groups["STATE"])
+    dyn_idx = sorted(i for g in DYNAMIC_GROUPS for i in groups[g])
     dyn_pos = {c: i for i, c in enumerate(dyn_idx)}
-    static_channels = len(groups["STATIC"]) + len(groups["QUASI_STATIC"]) + len(groups["SCALAR"])
+    static_channels = sum(len(groups[g]) for g in STATIC_GROUPS) + len(groups["SCALAR"])
 
     model_params = dict(params["model"])
     model_params["n_cause_classes"] = int(manifest["n_cause_classes"])
     model_params["dyn_groups"] = {
-        name: sorted(dyn_pos[c] for c in groups[name]) for name in ("MET", "STATE")
+        name: sorted(dyn_pos[c] for c in groups[name]) for name in DYNAMIC_GROUPS
     }
 
     model = FireFusionModel(len(dyn_idx), static_channels, model_params).to(device)

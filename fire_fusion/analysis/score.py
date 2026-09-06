@@ -1,34 +1,38 @@
 """
 Score extracted prediction archives, one stage per question: native per-tier
-skill against climatology, the joint rate-times-placement decomposition,
-cross-tier comparison on a pooled common grid, allocation on a fixed evaluation
-grid, the field against its own static map, cause skill over the class prior,
-and sub-cell localization.
+skill against climatology, the joint rate-times-placement decomposition
+(statewide and per lattice region), cross-tier comparison on a pooled common
+grid, allocation on a fixed evaluation grid, the field against its own static
+map, cause skill over the class prior, sub-cell localization, and the
+assembled product forecast.
 
 Stages are independent, every one reads through archive.load_archive, and each
 writes a single JSON report under REPORTS_DIR. An intervention archive
-('<exp>@met_year') is an experiment name to every stage.
+('<exp>@weather_year') or a forecast archive is an experiment name to every stage.
 
   python -m fire_fusion.analysis.score native --experiments wa2000-s1 --split test
-  python -m fire_fusion.analysis.score joint --experiments wa4000-d192-s1 --split test
-  python -m fire_fusion.analysis.score static --experiments wa4000-d192-s1 --coarse-res 4000 --static-from train
+  python -m fire_fusion.analysis.score joint --experiments wa4000-static-d192-s1 --regions 50 100 200
+  python -m fire_fusion.analysis.score static --experiments wa4000-d192-s1 --coarse-res 4000 --static-from train --contrast vpd_max
   python -m fire_fusion.analysis.score pooled --experiments wa2000-s1 wa1000-s1 cascades500-d192-s1
   python -m fire_fusion.analysis.score allocation --experiments cascades500-d192-s1 --footprint self
+  python -m fire_fusion.analysis.score forecast --static-arm wa2000-static --spread-arm wa2000-s1 --regions 100
 """
 import argparse
 import json
 
 import numpy as np
 
-from ..config.path_config import REPORTS_DIR
+from ..config.path_config import PRED_DIR, REPORTS_DIR
 from .allocation import (DEFAULT_BUDGETS, PERSIST_KM, cells, day_sums, fit_persistence,
                          fit_temperature, localization_scores, persistence,
                          report as allocation_report, static_map, strata)
 from .archive import climatology_for, coarse_grid, load_archive, restrict_to_footprint
 from .extract import extract
+from .forecast import assemble, forecast_name
 from .grid import (build_membership, common_supervision, evaluation_grid, pool_fields,
                    reference_envelope)
 from .joint import stage_joint
+from .rate import daily_frame
 from .scores import (
     by_year, cause_ignorance_bits, cox_calibration, ignorance_bits, murphy_decomposition,
     per_day_sums, year_block_bootstrap,
@@ -238,6 +242,7 @@ def stage_allocation(experiments, split, bandwidth_km, footprint, coarse_res,
         for e in experiments:
             _static_fields(pooled, cal, e, field, (bandwidth_km, footprint, coarse_res, calibrated))
     ring = None if persist_km == 0 else cells(persist_km, coarse_res)
+    model_sums = {}
 
     if footprint == "self":
         supervision = {e: pooled[e]["n_supervised"] > 0 for e in experiments}
@@ -281,8 +286,10 @@ def stage_allocation(experiments, split, bandwidth_km, footprint, coarse_res,
                  "persistence": {"w": pers["w"], "r_cells": pers["r"],
                                  "r_km": pers["r"] * coarse_res / 1000.0},
                  "mean_supervised_cells_per_day": float(sup.sum((1, 2)).mean())}
+        model_sums[exp] = {}
         for stratum, sel in (("all", None), ("spread", spread), ("ignition", ~spread)):
             sums = {k: day_sums(f, y, sup, events=sel) for k, f in fields.items()}
+            model_sums[exp][stratum] = sums["model"]
             block = allocation_report(sums["model"], {k: sums[k] for k in ("clim", "persistence")})
             tempered = allocation_report(sums["model_tempered"], {k: sums[k] for k in ("clim", "persistence")})
             block["tempered"] = {k: tempered[k] for k in ("skill_vs_clim", "skill_vs_persistence",
@@ -300,6 +307,30 @@ def stage_allocation(experiments, split, bandwidth_km, footprint, coarse_res,
                     per_year, lambda s: 1 - s["bits_m"] / s["uniform"], n_boot, seed)
             entry[stratum] = block
         report["tiers"][exp] = entry
+
+    # -- paired against the first experiment on the days both archives hold;
+    #    a 1-day and a 10-day window disagree on the season-opening days
+    base = experiments[0]
+    report["paired"] = {}
+    for exp in experiments[1:]:
+        common = np.intersect1d(pooled[base]["dates"], pooled[exp]["dates"])
+        if common.size == 0:
+            report["paired"][exp] = {"base": base, "n_days_common": 0}
+            continue
+        ib = np.searchsorted(pooled[base]["dates"], common)
+        ie = np.searchsorted(pooled[exp]["dates"], common)
+        years = pooled[base]["years"][ib]
+        report["paired"][exp] = {"base": base, "n_days_common": int(common.size)}
+        for stratum in ("all", "spread", "ignition"):
+            b, e = model_sums[base][stratum], model_sums[exp][stratum]
+            per_year = by_year({"bits_b": b["bits"][ib], "bits_e": e["bits"][ie],
+                                "n_b": b["events"][ib], "n_e": e["events"][ie]}, years)
+            report["paired"][exp][stratum] = {
+                "n_events": [float(b["events"][ib].sum()), float(e["events"][ie].sum())],
+                "resolved_over_base_ci": year_block_bootstrap(
+                    per_year, lambda s: s["bits_b"] / max(s["n_b"], 1.0) - s["bits_e"] / max(s["n_e"], 1.0),
+                    n_boot, seed),
+            }
     return report
 
 
@@ -315,16 +346,31 @@ def _top_jaccard(f: np.ndarray, sup: np.ndarray, frac: float = 0.01) -> float:
     return float(np.mean([len(a & b) / len(a | b) for a, b in zip(tops[:-1], tops[1:]) if a | b]))
 
 
+def _contrast_days(exp: str, split: str, channel: str, regions_km: float, dates: np.ndarray) -> tuple:
+    """ (top, std): the days in the archive whose across-region standard
+        deviation of the channel's region means is in the top quartile. """
+    side = json.loads((PRED_DIR / f"{exp}_{split}.json").read_text())
+    frame = daily_frame(side["dataset"], split, side.get("fold", "full"), regions_km)
+    feat = frame["features"][:, :, frame["feature_names"].index(channel)]
+    feat = np.where(frame["n_sup"] > 0, feat, np.nan)
+    std = np.nanstd(feat, axis=1)
+    pos = {d: i for i, d in enumerate(frame["dates"])}
+    std = std[[pos[d] for d in dates]]
+    return std >= np.nanpercentile(std, 75), std
+
+
 def stage_static(experiments, split, bandwidth_km, coarse_res, n_boot, seed,
-                 calibrated, static_from=None) -> dict:
+                 calibrated, static_from=None, contrast=None, regions_km=100.0) -> dict:
     """ The field against its own static map on the model's own grid: allocation
         per stratum for the field, its time average over this split (and over
         the train years with `static_from='train'`), climatology and uniform,
         plus how much the field moves. If the static map matches the field on
-        the ignition stratum, the dynamic inputs place nothing there.
+        the ignition stratum, the dynamic inputs place nothing there. `contrast`
+        names a channel: the same paired difference on the quartile of days
+        where that channel varies most across regions.
     """
     report = {"split": split, "coarse_res_m": coarse_res, "static_from": static_from,
-              "budgets": list(DEFAULT_BUDGETS), "tiers": {}}
+              "contrast": contrast, "budgets": list(DEFAULT_BUDGETS), "tiers": {}}
     for exp in experiments:
         arm = _pooled_arm(exp, split, bandwidth_km, "self", coarse_res, calibrated)
         p, y, sup = arm["p"], arm["y"], arm["n_supervised"] > 0
@@ -337,8 +383,10 @@ def stage_static(experiments, split, bandwidth_km, coarse_res, n_boot, seed,
 
         entry = {"grid": list(arm["grid"]), "n_days": int(p.shape[0]),
                  "n_cell_days": float(sup.sum()), "n_events": float((y * sup).sum()), "strata": {}}
+        stratum_sums = {}
         for stratum, sel in (("all", None), ("spread", spread), ("ignition", ~spread)):
             sums = {k: day_sums(f, y, sup, events=sel) for k, f in fields.items()}
+            stratum_sums[stratum] = sums
             block = {}
             for k in fields:
                 r = allocation_report(sums[k], {"clim": sums["clim"]})
@@ -356,6 +404,24 @@ def stage_static(experiments, split, bandwidth_km, coarse_res, n_boot, seed,
                     block[k]["resolved_over_model_ci"] = year_block_bootstrap(
                         per_year, lambda s: (s["bits_m"] - s["bits"]) / s["n"], n_boot, seed)
             entry["strata"][stratum] = block
+
+        if contrast:
+            top, std = _contrast_days(exp, split, contrast, regions_km, arm["dates"])
+            entry["contrast"] = {"channel": contrast, "regions_km": regions_km,
+                                 "n_days_top": int(top.sum()), "std_threshold": float(np.nanmin(std[top])),
+                                 "strata": {}}
+            for stratum in ("all", "ignition"):
+                sums = stratum_sums[stratum]
+                entry["contrast"]["strata"][stratum] = {}
+                for name, days in (("top", top), ("rest", ~top)):
+                    per_year = by_year({k: sums[k]["bits"][days] for k in fields} | {"n": sums["model"]["events"][days]},
+                                       arm["years"][days])
+                    # -- paired: bits per event the field resolves beyond its map on these days
+                    entry["contrast"]["strata"][stratum][name] = {
+                        "n_events": float(sums["model"]["events"][days].sum()),
+                        **{f"field_over_{k}": year_block_bootstrap(
+                            per_year, lambda s, k=k: (s[k] - s["model"]) / max(s["n"], 1.0), n_boot, seed)
+                           for k in fields if k not in ("model", "clim")}}
 
         mean_map = np.where(sup.sum(0) > 0, smap, np.nan)
         entry["temporal_over_spatial_variance"] = float(
@@ -394,12 +460,40 @@ def stage_localization(experiments, split, footprint, coarse_res, calibrated) ->
     return report
 
 
+def stage_forecast(static_arm, spread_arm, cause_arm, regions_km, split, bandwidth_km, coarse_res,
+                   n_boot, seed, calibrated, calibrate_split, persist_km) -> dict:
+    """ Assemble the product archive on the scored and calibration splits, then
+        score it through allocation, joint and cause. """
+    for s in {split, calibrate_split}:
+        name = assemble(static_arm, s, regions_km, spread_arm, cause_arm, persist_km, calibrated)
+    side = json.loads((PRED_DIR / f"{name}_{split}.json").read_text())
+    return {
+        "archive": name, "components": side["components"],
+        "allocation": stage_allocation([name], split, bandwidth_km, "self", coarse_res, n_boot, seed,
+                                       calibrated, None, calibrate_split, "model", persist_km),
+        "joint": stage_joint([name], split, bandwidth_km, n_boot, seed, calibrated),
+        "cause": stage_cause([name], split, calibrated),
+    }
+
+
 def main():
     """ Parse CLI arguments, run the requested scoring stage, and write the report JSON. """
     ap = argparse.ArgumentParser(description="Score extracted prediction archives")
     ap.add_argument("stage", choices=["extract", "native", "joint", "pooled", "allocation",
-                                      "static", "cause", "localization", "compare"])
-    ap.add_argument("--experiments", nargs="+", required=True)
+                                      "static", "cause", "localization", "compare", "forecast"])
+    ap.add_argument("--experiments", nargs="+", default=[])
+    ap.add_argument("--regions", nargs="+", type=float, default=[],
+                    help="lattice region sizes in km: joint adds regional pairings per size; "
+                         "static's --contrast and forecast read the first")
+    ap.add_argument("--pool", action="store_true",
+                    help="joint: one bootstrap over the experiments' union of years, each "
+                         "archive a fold scored on its own test years")
+    ap.add_argument("--contrast", default=None, metavar="CHANNEL",
+                    help="static: the field against its map on the quartile of days where "
+                         "CHANNEL varies most across regions")
+    ap.add_argument("--static-arm", default=None, help="forecast: the arm whose field is the map")
+    ap.add_argument("--spread-arm", default=None, help="forecast: the arm scored near active fire")
+    ap.add_argument("--cause-arm", default=None, help="forecast: the arm whose cause head is used")
     ap.add_argument("--split", default="test", choices=["train", "eval", "test"])
     ap.add_argument("--bandwidth-km", type=float, default=20.0)
     ap.add_argument("--footprint", default="cascades500")
@@ -421,6 +515,11 @@ def main():
                     help="analytic subsampling shift instead of the fitted calibrator")
     args = ap.parse_args()
     calibrated = not args.raw
+    if args.stage == "forecast":
+        if not (args.static_arm and args.regions):
+            raise SystemExit("forecast needs --static-arm and --regions")
+    elif not args.experiments:
+        raise SystemExit("--experiments is required")
 
     if args.stage == "extract":
         for exp in args.experiments:
@@ -432,11 +531,15 @@ def main():
                               args.n_boot, args.seed, calibrated)
     elif args.stage == "joint":
         report = stage_joint(args.experiments, args.split, args.bandwidth_km,
-                             args.n_boot, args.seed, calibrated)
+                             args.n_boot, args.seed, calibrated, args.regions, args.pool)
     elif args.stage == "static":
         report = stage_static(args.experiments, args.split, args.bandwidth_km,
                               args.coarse_res, args.n_boot, args.seed, calibrated,
-                              args.static_from)
+                              args.static_from, args.contrast, args.regions[0] if args.regions else 100.0)
+    elif args.stage == "forecast":
+        report = stage_forecast(args.static_arm, args.spread_arm, args.cause_arm, args.regions[0],
+                                args.split, args.bandwidth_km, args.coarse_res, args.n_boot, args.seed,
+                                calibrated, args.calibrate_split, args.persist_km)
     elif args.stage == "pooled":
         report = stage_pooled(args.experiments, args.split, args.bandwidth_km,
                               args.footprint, args.coarse_res, args.n_boot,
@@ -457,7 +560,10 @@ def main():
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     stage = args.stage if args.field == "model" else f"{args.stage}-{args.field}"
-    name = f"{stage}_{args.split}_{'-'.join(args.experiments)}.json"
+    if args.stage == "static" and args.contrast:
+        stage = f"{stage}-contrast-{args.contrast}"
+    named = args.experiments or [forecast_name(args.static_arm, args.regions[0], args.spread_arm)]
+    name = f"{stage}_{args.split}_{'-'.join(named)}.json"
     out = REPORTS_DIR / name
     out.write_text(json.dumps(report, indent=1, default=float))
     print(json.dumps(report, indent=1, default=float))

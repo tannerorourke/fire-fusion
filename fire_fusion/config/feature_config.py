@@ -14,16 +14,24 @@ IGN_HORIZON_DAYS = 7
 
 
 """
-Every channel in the cube belongs to one CHANNEL_GROUPS group. The model conditions on these: 
-- STATIC and QUASI_STATIC carry no per-day signal and steer the dynamic path
-- MET (meteorology) and STATE evolve daily
+Every channel in the cube belongs to one CHANNEL_GROUPS group. The model conditions on these:
+- STATIC_GROUPS feed the static branch, read once at the window's final day: terrain
+  and settlement, and the slowly varying accumulators (WUI, population, land cover,
+  the per-cause ignition KDEs with a 365-day half-life)
+- DYNAMIC_GROUPS evolve daily and each owns one encoder stem and one missing token:
+  WEATHER (thermodynamics, moisture, fuel moisture), WIND (speed, direction, the
+  Fosberg index), FIRE (fire on the ground and burn age), LIGHTNING (strikes and
+  their decayed load), VEG (LAI and NDVI anomaly). A profile's 'drop_groups' names
+  the groups an arm never reads.
 - SCALAR is the spatially constant date term
 
 CAUSAL_CLASSES determine output shape of prediction head
 - DEBRIS and INDUSTRIAL are merged into INDUSTRIAL at compile time. DEBRIS is a few
   hundred labelled cell-days vs five-figs for lightning.
 """
-CHANNEL_GROUPS = ("STATIC", "QUASI_STATIC", "MET", "STATE", "SCALAR")
+STATIC_GROUPS = ("STATIC", "QUASI_STATIC")
+DYNAMIC_GROUPS = ("WEATHER", "WIND", "FIRE", "LIGHTNING", "VEG")
+CHANNEL_GROUPS = STATIC_GROUPS + DYNAMIC_GROUPS + ("SCALAR",)
 
 CAUSAL_CLASSES = [
     "NATURAL_LIGHTNING",
@@ -193,7 +201,7 @@ def base_feat_config():
         "PRISM": [
             Feature(
                 name = "temp_avg",
-                group = "MET",
+                group = "WEATHER",
                 key = "tmean",
                 clip = (-40.0, 120.0),
                 resampling = Resampling.bilinear,
@@ -202,7 +210,7 @@ def base_feat_config():
             ),
             Feature(
                 name = "temp_min",
-                group = "MET",
+                group = "WEATHER",
                 key = "tmin",
                 clip = (-40.0, 120.0),
                 resampling = Resampling.bilinear,
@@ -211,7 +219,7 @@ def base_feat_config():
             ),
             Feature(
                 name = "temp_max",
-                group = "MET",
+                group = "WEATHER",
                 key = "tmax",
                 clip = (-40.0, 120.0),
                 resampling = Resampling.bilinear,
@@ -220,7 +228,7 @@ def base_feat_config():
             ),
             Feature(
                 name = "dewpoint",
-                group = "MET",
+                group = "WEATHER",
                 key = "tdmean",
                 clip = (-60.0, 90.0),
                 resampling = Resampling.bilinear,
@@ -229,7 +237,7 @@ def base_feat_config():
             ),
             Feature(
                 name = "vpd_min",
-                group = "MET",
+                group = "WEATHER",
                 key = "vpdmin",
                 resampling = Resampling.bilinear,
                 time_interp = ("existing", "linear"),
@@ -238,7 +246,7 @@ def base_feat_config():
             ),
             Feature(
                 name = "vpd_max",
-                group = "MET",
+                group = "WEATHER",
                 key = "vpdmax",
                 resampling = Resampling.bilinear,
                 time_interp = ("existing", "linear"),
@@ -247,7 +255,7 @@ def base_feat_config():
             ),
             Feature(
                 name = "precip_mm",
-                group = "MET",
+                group = "WEATHER",
                 key = "ppt",
                 clip = (0, 150),
                 resampling = Resampling.bilinear,
@@ -258,7 +266,7 @@ def base_feat_config():
         "AORC": [
             Feature(
                 name = "rel_humidity",
-                group = "MET",
+                group = "WEATHER",
                 key = "rel_humidity",
                 clip = (0.0, 100.0),
                 resampling = Resampling.bilinear,
@@ -275,7 +283,7 @@ def base_feat_config():
             ),
             Feature(
                 name = "wind_mph",
-                group = "MET",
+                group = "WIND",
                 key = "wind_mph",
                 resampling = Resampling.bilinear,
                 time_interp = ("existing", "linear"),
@@ -312,14 +320,15 @@ def base_feat_config():
             ),
             Feature(
                 name = "ign_KDE",
-                group = "STATE",
+                group = "QUASI_STATIC",
                 # KDE names are "kde_[burn cause]"
                 expand_names = ["kde_natural_lightning", "kde_human", "kde_industrial", "kde_debris"],
                 key = "Fire_KDE",
                 kde_smooth_radius_km = 20,
                 # annual half-life keeps a multi-year spatial ignition prior while
                 # holding the accumulator stationary; a train-fit z_score stays
-                # calibrated on the later eval/test years
+                # calibrated on the later eval/test years. Causal, and read at the
+                # window's final day like every static-branch channel
                 kde_half_life_days = 365,
                 # per_area first: the accumulator is fires per cell; per-km2
                 # density holds the same meaning across resolutions
@@ -392,7 +401,7 @@ def base_feat_config():
         "MODIS": [
             Feature(
                 name = "modis_lai",
-                group = "STATE",
+                group = "VEG",
                 key = "MCD15A2H",
                 # simple reprojection
                 resampling = Resampling.nearest, 
@@ -415,7 +424,7 @@ def base_feat_config():
                 # modis_burn_unc are label-side and dropped downstream. The group
                 # and norms below reach the age layer alone
                 name = "mcd64a1",
-                group = "STATE",
+                group = "FIRE",
                 key = "MCD64A1",
                 expand_names = ["modis_burn", "modis_burn_unc", "days_since_last_burn"],
                 # min over the source pixels keeps the earliest burn day in a cell
@@ -469,7 +478,7 @@ def base_feat_config():
         "LIGHTNING": [
             Feature(
                 name = "lightning_strikes",
-                group = "STATE",
+                group = "LIGHTNING",
                 # daily CG strike count per 0.1 deg tile
                 resampling = Resampling.nearest,
                 # the product carries a value (>=1 or a true zero) for every
@@ -522,7 +531,7 @@ def drv_feat_config() -> List[Feature]:
             inputs=["burns_late", "no_act_fire_mask"],
         ),
         Feature(name = "fire_spatial_roll",
-            group = "STATE",
+            group = "FIRE",
             func = "build_fire_spatial_rolling",
             inputs=["active"],
             ds_norms = ["log1p", "z_score"],
@@ -554,7 +563,7 @@ def drv_feat_config() -> List[Feature]:
         ),
         Feature(
             name = "ndvi_anomaly",
-            group = "STATE",
+            group = "VEG",
             func = "build_ndvi_anomaly",
             inputs=["modis_ndvi"],
             train_dependent=True,
@@ -564,13 +573,13 @@ def drv_feat_config() -> List[Feature]:
             ds_norms = ["z_score"],
         ),
         Feature(expand_names = ["precip_2d", "precip_5d"],
-            group = "MET",
+            group = "WEATHER",
             func = "build_precip_cum",
             inputs=["precip_mm"], drop_inputs = None,
             ds_norms = ["log1p", "z_score"],
         ),
         Feature(expand_names = ["dead_fmo_100hr", "dead_fmo_1000hr"],
-            group = "MET",
+            group = "WEATHER",
             func = "build_dead_fuel_derived",
             inputs=["temp_min", "temp_max", "rel_humidity", "rh_max", "precip_mm"],
             # EMCbar uses the diurnal extremes; rh_max is consumed and dropped.
@@ -578,13 +587,13 @@ def drv_feat_config() -> List[Feature]:
             ds_norms = ["z_score"],
         ),
         Feature(name = "lightning_load",
-            group = "STATE",
+            group = "LIGHTNING",
             func = "build_lightning_load",
             inputs=["lightning_strikes"], drop_inputs = None,
             ds_norms = ["log1p", "z_score"],
         ),
         Feature(expand_names = ["wind_dir_ew", "wind_dir_ns"],
-            group = "MET",
+            group = "WIND",
             func = "build_wind_ew_ns",
             inputs=["wind_dir"],
             drop_inputs=["wind_dir"],
@@ -597,7 +606,7 @@ def drv_feat_config() -> List[Feature]:
         ),
         Feature(
             name = "fosberg_fwi",
-            group = "MET",
+            group = "WIND",
             func = 'build_ffwi',
             inputs=["temp_avg", "rel_humidity", "wind_mph"],
             ds_norms = ["z_score"],
