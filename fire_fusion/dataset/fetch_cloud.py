@@ -61,7 +61,7 @@ class B2Store:
         from botocore.config import Config
 
         endpoint = endpoint or os.environ["B2_ENDPOINT"]
-        self.bucket = bucket or os.environ["B2_BUCKET"]
+        self.bucket = bucket or os.environ.get("B2_BUCKET", "fire-fusion")
         # -- B2 signs against the region embedded in the endpoint host
         m = re.search(r"s3\.([^.]+)\.backblazeb2\.com", endpoint)
         region = m.group(1) if m else os.environ.get("B2_REGION", "us-east-005")
